@@ -1,0 +1,14 @@
+demucs
+numpy
+opencv_python
+PyAudio
+PyQt6
+syncedlyrics
+yt_dlp
+requests
+soundfile
+pydub
+ytmusicapi
+flask
+flask-cors
+werkzeug
