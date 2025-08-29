@@ -3,6 +3,7 @@ from ytmusicapi import YTMusic
 
 ytmusic = YTMusic()
 
+
 def search(query):
     search_results = ytmusic.search(query)
     results = []
@@ -20,8 +21,11 @@ def search(query):
                     "views": res.get("views"),
                 }
             )
-            
+
     return results
+
 
 if __name__ == "__main__":
     print(search("Oasis Wonderwall"))
+
+

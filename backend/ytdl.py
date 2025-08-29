@@ -1,12 +1,13 @@
 import yt_dlp
 
+
 def get_audio_stream(youtube_url):
     """
     Extracts the direct audio stream URL from a YouTube video using yt_dlp.
-    
+
     Args:
         youtube_url (str): The YouTube video URL to extract audio from.
-    
+
     Returns:
         str: The direct audio stream URL.
     """
@@ -25,7 +26,9 @@ def get_audio_stream(youtube_url):
 
     return audio_url
 
-# Example usage
+
 if __name__ == "__main__":
     url = "https://www.youtube.com/watch?v=lYBUbBu4W08"
     print(get_audio_stream(url))
+
+

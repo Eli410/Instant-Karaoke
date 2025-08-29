@@ -1,6 +1,6 @@
 import os
 import sys
-from app import app
+from backend.app import app
 
 if __name__ == '__main__':
     print("🎵 Instant Karaoke - Audio Separation Web App")

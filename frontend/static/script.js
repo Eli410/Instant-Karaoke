@@ -12,6 +12,8 @@ class InstantKaraokeApp {
             duration: 0,
             tickerRunning: false,
         };
+        // Track the active session for polling cancellation/race avoidance
+        this.activeSessionId = null;
         this.scheduler = {
             usingChunks: true,
             startTime: 0,
@@ -19,6 +21,7 @@ class InstantKaraokeApp {
             perStem: {}, // stemName -> { nextIndex: 0, scheduled: Set() }
             done: false,
             shouldAutoStart: true, // Allow auto-start only on first chunk
+            continuousLoaded: false,
         };
         
         this.initializeEventListeners();
@@ -86,6 +89,8 @@ class InstantKaraokeApp {
         this.lyrics = {
             entries: [],
             activeIndex: -1,
+            loading: false,
+            offset: 0.0,
         };
         this.lyricsContainer = document.getElementById('lyricsContainer');
     }
@@ -179,6 +184,7 @@ class InstantKaraokeApp {
 
             const result = await response.json();
             this.currentSession = result;
+            this.activeSessionId = result.session_id;
             
             // Hide upload progress and show processing
             this.hideUploadProgress();
@@ -296,11 +302,14 @@ class InstantKaraokeApp {
 
     startPolling() {
         const sessionId = this.currentSession.session_id;
+        const pollToken = sessionId; // capture token to detect stale pollers
         const poll = async () => {
             try {
                 const res = await fetch(`/api/status/${sessionId}`);
                 const status = await res.json();
                 if (status.error) return;
+                // If session changed, stop this poller silently
+                if (this.activeSessionId !== pollToken) return;
                 // For each ready chunk per stem, if first chunk just arrived, begin playback using that chunk
                 for (const stemName of status.stems) {
                     const ready = status.ready[stemName] || [];
@@ -328,13 +337,19 @@ class InstantKaraokeApp {
                 if (status.done) {
                     // Enable seeking once continuous stems are available
                     document.getElementById('seekSlider').disabled = false;
-                    // Also switch to continuous playback when user seeks; keep chunk scheduler running until end
+                    // Load continuous stems once, then optionally switch playback mode on next seek
+                    if (!this.scheduler.continuousLoaded) {
+                        this.scheduler.continuousLoaded = true;
+                        for (const stemName of status.stems) {
+                            this.loadContinuousStem(sessionId, stemName).catch(() => {});
+                        }
+                    }
                 }
-                if (!status.done) {
+                if (!status.done && this.activeSessionId === pollToken) {
                     setTimeout(poll, 1000);
                 }
             } catch (e) {
-                setTimeout(poll, 1500);
+                if (this.activeSessionId === pollToken) setTimeout(poll, 1500);
             }
         };
         poll();
@@ -377,8 +392,8 @@ class InstantKaraokeApp {
         source.connect(state.gainNode);
         // Only schedule chunk if transport should be playing
         if (!this.transport.isPlaying && this.scheduler.shouldAutoStart) {
-            // Start transport now at t=0 with this first scheduled chunk index 0
-            const now = this.audioContext.currentTime + 0.05;
+            // Delay a little to allow multiple stems' first chunks to queue for sync
+            const now = this.audioContext.currentTime + 0.25;
             this.transport.isPlaying = true;
             this.transport.startTime = now;
             this.transport.pausedAt = 0;
@@ -503,6 +518,25 @@ class InstantKaraokeApp {
         if (controls) controls.style.display = 'flex';
         if (lyricsPane) lyricsPane.style.display = '';
         if (emptyState) emptyState.style.display = 'none';
+        // Wire up lyrics offset controls once visible
+        const minus = document.getElementById('lyricsOffsetMinus');
+        const plus = document.getElementById('lyricsOffsetPlus');
+        const value = document.getElementById('lyricsOffsetValue');
+        if (minus && plus && value && !this._lyricsOffsetBound) {
+            minus.addEventListener('click', () => {
+                this.lyrics.offset = (this.lyrics.offset || 0) - 0.5;
+                value.textContent = `${this.lyrics.offset.toFixed(1)}s`;
+                // Re-render to reflect new alignment immediately
+                this.updateLyricsAtTime(this.getCurrentTime());
+            });
+            plus.addEventListener('click', () => {
+                this.lyrics.offset = (this.lyrics.offset || 0) + 0.5;
+                value.textContent = `${this.lyrics.offset.toFixed(1)}s`;
+                this.updateLyricsAtTime(this.getCurrentTime());
+            });
+            value.textContent = `${(this.lyrics.offset || 0).toFixed(1)}s`;
+            this._lyricsOffsetBound = true;
+        }
     }
 
     createStemElement(stemName, stemData) {
@@ -662,7 +696,7 @@ class InstantKaraokeApp {
         if (this.audioContext.state === 'suspended') {
             this.audioContext.resume();
         }
-        const now = this.audioContext.currentTime + 0.05;
+        const now = this.audioContext.currentTime + 0.15; // small delay to allow initial stems to be ready
         this.transport.startTime = now;
         this.transport.isPlaying = true;
         this.transport.pausedAt = 0;
@@ -717,7 +751,11 @@ class InstantKaraokeApp {
                 // Resume chunk scheduling for new chunks that might be ready
                 this.resumeChunkScheduling();
             } else {
-                // Resume continuous stems
+                // Resume continuous stems: stop any playing and restart from pausedAt to keep all stems aligned
+                for (const source of Object.values(this.audioSources)) {
+                    try { source.stop(); } catch (_) {}
+                }
+                this.audioSources = {};
                 this.startContinuousPlayback(this.transport.pausedAt);
             }
         } else {
@@ -783,12 +821,29 @@ class InstantKaraokeApp {
         const ratio = e.target.value / 100;
         const newTime = ratio * this.transport.duration;
         document.getElementById('currentTimeLabel').textContent = this.formatTime(newTime);
-        // Seek support using chunk scheduler
-        this.transport.pausedAt = newTime;
-        if (this.transport.isPlaying) {
-            // Pause then resume from new position
-            this.togglePlayPause();
-            this.togglePlayPause();
+        // If continuous stems are loaded, switch to continuous playback for accurate seeking
+        if (this.scheduler.continuousLoaded) {
+            // Stop any chunk sources
+            for (const source of Object.values(this.audioSources)) {
+                try { source.stop(); } catch (_) {}
+            }
+            this.audioSources = {};
+            this.scheduler.usingChunks = false;
+            this.transport.pausedAt = newTime;
+            if (this.transport.isPlaying) {
+                // Restart continuous playback at new time
+                const now = this.audioContext.currentTime + 0.05;
+                this.transport.startTime = now - newTime;
+                this.startContinuousPlayback(newTime);
+            }
+        } else {
+            // Fallback: seek by pausing/resuming chunk scheduler
+            this.transport.pausedAt = newTime;
+            if (this.transport.isPlaying) {
+                // Pause then resume from new position
+                this.togglePlayPause();
+                this.togglePlayPause();
+            }
         }
     }
 
@@ -986,6 +1041,39 @@ class InstantKaraokeApp {
                 // Visual feedback
                 card.style.opacity = '0.7';
                 try {
+                    // If a session is active (playing or loaded), confirm replacement
+                    const hasActiveSession = !!this.currentSession || this.transport.isPlaying || Object.keys(this.audioSources || {}).length > 0;
+                    if (hasActiveSession) {
+                        const ok = window.confirm('A song is currently loaded. Replace it with the new selection?');
+                        if (!ok) return;
+                        // Cleanly stop current playback and prepare for a new session without toggling tabs
+                        this.stopAll();
+                        // Attempt backend cleanup of the previous session to avoid stale files
+                        if (this.activeSessionId) {
+                            try { await fetch(`/api/cleanup/${encodeURIComponent(this.activeSessionId)}`, { method: 'POST' }); } catch (_) {}
+                        }
+                        this.currentSession = null;
+                        this.audioBuffers = {};
+                        this.audioSources = {};
+                        this.trackStates = {};
+                        this.scheduler.perStem = {};
+                        this.scheduler.shouldAutoStart = true;
+                        this.scheduler.done = false;
+                        this.scheduler.continuousLoaded = false;
+                        this.scheduler.usingChunks = true;
+                        this.transport.duration = 0;
+                        // Clear stems UI immediately for visual reset
+                        const stemsContainer = document.getElementById('stemsContainer');
+                        if (stemsContainer) stemsContainer.innerHTML = '';
+                        // Reset UI pieces
+                        const seekSlider = document.getElementById('seekSlider');
+                        const currentLabel = document.getElementById('currentTimeLabel');
+                        const totalLabel = document.getElementById('totalTimeLabel');
+                        if (seekSlider) { seekSlider.value = 0; seekSlider.disabled = true; }
+                        if (currentLabel) currentLabel.textContent = '0:00';
+                        if (totalLabel) totalLabel.textContent = '0:00';
+                        // Reset lyrics to loading placeholder only when we actually start a new session fetch below
+                    }
                     const titleMeta = item.title || '';
                     let artistMeta = '';
                     if (Array.isArray(item.author) && item.author.length > 0) {
@@ -1024,6 +1112,7 @@ class InstantKaraokeApp {
                 throw new Error(data.error || 'Failed to start YouTube session');
             }
             this.currentSession = data;
+            this.activeSessionId = data.session_id;
             // Begin simulated processing progress and player setup
             this.simulateProcessingProgress();
             this.createStemsPlayer();
@@ -1049,13 +1138,32 @@ class InstantKaraokeApp {
     async loadLyricsForCurrentTrack(metadata = null) {
         try {
             if (!metadata || !metadata.title || !metadata.artist) return;
+            // Set loading state and render placeholder
+            this.lyrics.loading = true;
+            this.renderLyrics(-1);
             const qs = new URLSearchParams({ title: metadata.title, artist: metadata.artist });
             const res = await fetch(`/api/lyrics?${qs.toString()}`);
             const data = await res.json();
-            if (!res.ok || !data.lrc) return;
-            this.parseAndSetLyrics(data.lrc);
+            if (!res.ok) {
+                this.lyrics.loading = false;
+                this.lyrics.entries = [];
+                this.lyrics.activeIndex = -1;
+                this.renderLyrics(-1);
+                return;
+            }
+            if (data.lrc) {
+                this.parseAndSetLyrics(data.lrc);
+            } else {
+                this.lyrics.loading = false;
+                this.lyrics.entries = [];
+                this.lyrics.activeIndex = -1;
+                this.renderLyrics(-1);
+            }
         } catch (e) {
-            // silent fail
+            this.lyrics.loading = false;
+            this.lyrics.entries = [];
+            this.lyrics.activeIndex = -1;
+            this.renderLyrics(-1);
         }
     }
 
@@ -1063,28 +1171,39 @@ class InstantKaraokeApp {
         const lines = String(lrcText || '').split(/\r?\n/);
         const entries = [];
         for (const line of lines) {
-            const match = line.match(/\[(\d{2}):(\d{2})(?:\.(\d{1,2}))?\]\s*(.*)/);
+            // Support [mm:ss.xx] and [mm:ss.xxx]
+            const match = line.match(/\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)/);
             if (!match) continue;
             const mm = parseInt(match[1], 10);
             const ss = parseInt(match[2], 10);
-            const cs = match[3] ? parseInt(match[3].padEnd(2, '0'), 10) : 0;
-            const time = mm * 60 + ss + cs / 100;
+            const fracStr = match[3] || '';
+            let fracSeconds = 0;
+            if (fracStr.length === 3) {
+                fracSeconds = parseInt(fracStr, 10) / 1000;
+            } else if (fracStr.length === 2) {
+                fracSeconds = parseInt(fracStr, 10) / 100;
+            } else if (fracStr.length === 1) {
+                fracSeconds = parseInt(fracStr, 10) / 10;
+            }
+            const time = mm * 60 + ss + fracSeconds;
             const text = match[4] || '';
             entries.push({ time, text });
         }
         entries.sort((a, b) => a.time - b.time);
         this.lyrics.entries = entries;
         this.lyrics.activeIndex = -1;
+        this.lyrics.loading = false;
         this.renderLyrics(-1);
     }
 
     updateLyricsAtTime(currentSeconds) {
         const entries = this.lyrics.entries;
         if (!entries || entries.length === 0) return;
+        const adjusted = Math.max(0, currentSeconds + (this.lyrics.offset || 0));
         let low = 0, high = entries.length - 1, best = -1;
         while (low <= high) {
             const mid = (low + high) >> 1;
-            if (entries[mid].time <= currentSeconds) {
+            if (entries[mid].time <= adjusted) {
                 best = mid;
                 low = mid + 1;
             } else {
@@ -1102,14 +1221,22 @@ class InstantKaraokeApp {
         if (!container) return;
         container.innerHTML = '';
         const entries = this.lyrics.entries;
-        if (!entries || entries.length === 0) {
+        if (this.lyrics.loading) {
             const p = document.createElement('p');
-            p.textContent = 'No lyrics loaded.';
+            p.textContent = 'Loading lyrics...';
             container.appendChild(p);
             return;
         }
-        const start = Math.max(0, activeIndex - 1);
-        const end = Math.min(entries.length - 1, (activeIndex < 0 ? 1 : activeIndex) + 2);
+        if (!entries || entries.length === 0) {
+            const p = document.createElement('p');
+            p.textContent = 'No lyrics found.';
+            container.appendChild(p);
+            return;
+        }
+        // Smooth scrolling: render more lines and scroll to current smoothly
+        const viewportCount = 7;
+        const start = Math.max(0, (activeIndex < 0 ? 0 : activeIndex) - Math.floor(viewportCount / 2));
+        const end = Math.min(entries.length - 1, start + viewportCount - 1);
         for (let i = start; i <= end; i++) {
             const div = document.createElement('div');
             div.className = 'lyrics-line';
@@ -1118,6 +1245,11 @@ class InstantKaraokeApp {
             if (i === activeIndex) div.classList.add('current');
             if (i > activeIndex) div.classList.add('next');
             container.appendChild(div);
+        }
+        // Scroll current line into view smoothly
+        const currentEl = container.querySelector('.lyrics-line.current');
+        if (currentEl && typeof currentEl.scrollIntoView === 'function') {
+            currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }
 

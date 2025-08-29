@@ -47,10 +47,14 @@
                         </div>
                     </div>
                     <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
-                        <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics</div>
-                        <div class="lyrics-content" id="lyricsContainer">
-                            <p>No lyrics loaded.</p>
+                        <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics
+                            <div id="lyricsOffsetControls" style="float:right; display:flex; align-items:center; gap:8px;">
+                                <button id="lyricsOffsetMinus" class="control-btn" title="Shift lyrics earlier by 0.5s">-0.5s</button>
+                                <span id="lyricsOffsetValue">0.0s</span>
+                                <button id="lyricsOffsetPlus" class="control-btn" title="Shift lyrics later by 0.5s">+0.5s</button>
+                            </div>
                         </div>
+                        <div class="lyrics-content" id="lyricsContainer"></div>
                     </aside>
                 </div>
             </section>
