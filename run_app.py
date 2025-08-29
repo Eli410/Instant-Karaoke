@@ -1,15 +1,9 @@
-#!/usr/bin/env python3
-"""
-TrackFusion - Audio Separation Web Application
-Startup script for the Flask backend
-"""
-
 import os
 import sys
 from app import app
 
 if __name__ == '__main__':
-    print("🎵 TrackFusion - Audio Separation Web App")
+    print("🎵 Instant Karaoke - Audio Separation Web App")
     print("=" * 50)
     print("Starting server...")
     print("Open your browser and go to: http://localhost:8000")

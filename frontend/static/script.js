@@ -1,4 +1,4 @@
-class TrackFusionApp {
+class InstantKaraokeApp {
     constructor() {
         this.currentSession = null;
         this.audioContext = null;
@@ -23,6 +23,7 @@ class TrackFusionApp {
         
         this.initializeEventListeners();
         this.initializeAudioContext();
+        this.initializeLyrics();
     }
 
     initializeEventListeners() {
@@ -54,10 +55,39 @@ class TrackFusionApp {
         // Player controls
         document.getElementById('playPauseBtn').addEventListener('click', () => this.togglePlayPause());
         document.getElementById('stopAllBtn').addEventListener('click', () => this.stopAll());
-        document.getElementById('resetBtn').addEventListener('click', () => this.reset());
+        // removed reset/new-file button
         const seekSlider = document.getElementById('seekSlider');
         seekSlider.addEventListener('input', (e) => this.onSeekInput(e));
         seekSlider.disabled = true; // enable when continuous stems ready
+
+        // Advanced toggle (switch-style)
+        this.isAdvanced = false;
+        this.originalNonVocalVolumes = {}; // stemName -> number
+        const advToggle = document.getElementById('advancedToggle');
+        const advSwitch = document.getElementById('advancedToggleSwitch');
+        if (advToggle && advSwitch) {
+            const updateSwitchUI = () => {
+                if (this.isAdvanced) advSwitch.classList.add('active'); else advSwitch.classList.remove('active');
+            };
+            updateSwitchUI();
+            advToggle.addEventListener('click', () => {
+                this.isAdvanced = !this.isAdvanced;
+                updateSwitchUI();
+                this.applyAdvancedVisibility(true);
+            });
+        }
+
+        // Tabs and YouTube UI
+        this.setupTabs();
+        this.setupYouTubeSearch();
+    }
+
+    initializeLyrics() {
+        this.lyrics = {
+            entries: [],
+            activeIndex: -1,
+        };
+        this.lyricsContainer = document.getElementById('lyricsContainer');
     }
 
     initializeAudioContext() {
@@ -162,6 +192,7 @@ class TrackFusionApp {
             this.scheduler.chunkDuration = this.currentSession.chunk_duration || 5.0;
             this.scheduler.shouldAutoStart = true; // Enable auto-start for new session
             this.startPolling();
+            this.showPlayerActiveUI();
             
         } catch (error) {
             this.hideUploadProgress();
@@ -278,6 +309,8 @@ class TrackFusionApp {
                         const el = this.createStemElement(stemName, {});
                         el.id = `stem-${stemName}`;
                         document.getElementById('stemsContainer').appendChild(el);
+                        // Enforce current advanced/simple visibility on newly created track
+                        this.applyAdvancedVisibility(false);
                     }
                     // Schedule new ready chunks in order for each stem (only if playing or should auto-start)
                     const state = this.scheduler.perStem[stemName] || { nextIndex: 0, scheduled: new Set() };
@@ -446,10 +479,30 @@ class TrackFusionApp {
     createStemsPlayer() {
         this.hideProcessingProgress();
         document.getElementById('playerSection').style.display = 'block';
-        
+
+        // Hide controls/lyrics until playback actually starts
+        const controls = document.getElementById('playerControls');
+        const lyricsPane = document.getElementById('lyricsPane');
+        const emptyState = document.getElementById('playerEmptyState');
+        if (controls) controls.style.display = 'none';
+        if (lyricsPane) lyricsPane.style.display = 'none';
+        if (emptyState) emptyState.style.display = 'block';
+
         const stemsContainer = document.getElementById('stemsContainer');
         stemsContainer.innerHTML = '';
         // stems will appear dynamically as they become ready
+
+        // Ensure visibility mode applied to newly created stems once they arrive
+        setTimeout(() => this.applyAdvancedVisibility(false), 0);
+    }
+
+    showPlayerActiveUI() {
+        const controls = document.getElementById('playerControls');
+        const lyricsPane = document.getElementById('lyricsPane');
+        const emptyState = document.getElementById('playerEmptyState');
+        if (controls) controls.style.display = 'flex';
+        if (lyricsPane) lyricsPane.style.display = '';
+        if (emptyState) emptyState.style.display = 'none';
     }
 
     createStemElement(stemName, stemData) {
@@ -505,6 +558,8 @@ class TrackFusionApp {
         trackDiv.appendChild(trackHeader);
         trackDiv.appendChild(trackVolume);
         
+        // Apply visibility rules for simple/advanced modes
+        trackDiv.dataset.stemName = stemName;
         return trackDiv;
     }
 
@@ -614,6 +669,7 @@ class TrackFusionApp {
         this.updatePlayPauseUI();
         this.startTransportTicker();
         this.startContinuousPlayback(0);
+        this.showPlayerActiveUI();
     }
 
     startContinuousPlayback(offset = 0) {
@@ -705,6 +761,7 @@ class TrackFusionApp {
             if (this.transport.duration > 0) {
                 seekSlider.value = Math.min(100, (t / this.transport.duration) * 100);
             }
+            this.updateLyricsAtTime(t);
             requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
@@ -830,6 +887,326 @@ class TrackFusionApp {
         document.getElementById('errorMessage').textContent = message;
         document.getElementById('errorModal').style.display = 'block';
     }
+
+    setupTabs() {
+        const tabs = document.querySelectorAll('.tab');
+        const uploadSection = document.getElementById('uploadSection');
+        const youtubeSection = document.getElementById('youtubeSection');
+        tabs.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                tabs.forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                const target = btn.getAttribute('data-target');
+                if (target === 'uploadSection') {
+                    if (uploadSection) uploadSection.style.display = 'block';
+                    if (youtubeSection) youtubeSection.style.display = 'none';
+                } else if (target === 'youtubeSection') {
+                    if (uploadSection) uploadSection.style.display = 'none';
+                    if (youtubeSection) youtubeSection.style.display = 'block';
+                }
+            });
+        });
+    }
+
+    setupYouTubeSearch() {
+        const searchBtn = document.getElementById('youtubeSearchBtn');
+        const searchInput = document.getElementById('youtubeSearchInput');
+        const results = document.getElementById('youtubeResults');
+        if (!searchBtn || !searchInput || !results) return;
+
+        const triggerSearch = () => {
+            const query = (searchInput.value || '').trim();
+            results.innerHTML = '';
+            const placeholder = document.createElement('div');
+            placeholder.className = 'placeholder';
+            if (query.length === 0) {
+                placeholder.innerHTML = '<i class="fas fa-info-circle"></i> Enter a query to search YouTube.';
+            } else {
+                placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Searching for \"${this.escapeHtml(query)}\"...`;
+                this.fetchYouTubeResults(query, results);
+            }
+            results.appendChild(placeholder);
+        };
+
+        searchBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            triggerSearch();
+        });
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                triggerSearch();
+            }
+        });
+    }
+
+    async fetchYouTubeResults(query, container) {
+        try {
+            const res = await fetch(`/api/yt/search?q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.error || 'Search failed');
+            }
+            this.renderYouTubeResults(data.results || [], container);
+        } catch (err) {
+            container.innerHTML = '';
+            const error = document.createElement('div');
+            error.className = 'placeholder';
+            error.innerHTML = `<i class=\"fas fa-triangle-exclamation\"></i> ${this.escapeHtml(err.message)}`;
+            container.appendChild(error);
+        }
+    }
+
+    renderYouTubeResults(items, container) {
+        container.innerHTML = '';
+        if (!items.length) {
+            const empty = document.createElement('div');
+            empty.className = 'placeholder';
+            empty.innerHTML = '<i class="fas fa-circle-info"></i> No results found.';
+            container.appendChild(empty);
+            return;
+        }
+        const grid = document.createElement('div');
+        grid.className = 'yt-results-grid';
+        items.slice(0, 24).forEach((item) => {
+            const card = document.createElement('div');
+            card.className = 'yt-card';
+            const thumbUrl = item.thumbnails || '';
+            const title = item.title || 'Untitled';
+            const duration = item.duration || '';
+            const authors = this.formatAuthors(item.author);
+            const views = item.views || '';
+            const subText = [authors, duration, views ? `${views} views` : '']
+                .filter(Boolean)
+                .join(' · ');
+            card.setAttribute('data-video-id', item.videoId || '');
+            card.addEventListener('click', async () => {
+                const vid = item.videoId;
+                if (!vid) return;
+                // Visual feedback
+                card.style.opacity = '0.7';
+                try {
+                    const titleMeta = item.title || '';
+                    let artistMeta = '';
+                    if (Array.isArray(item.author) && item.author.length > 0) {
+                        artistMeta = item.author[0]?.name || '';
+                    } else if (typeof item.author === 'object' && item.author) {
+                        artistMeta = item.author.name || '';
+                    } else if (typeof item.author === 'string') {
+                        artistMeta = item.author;
+                    }
+                    await this.startYouTubeSession(vid, { title: titleMeta, artist: artistMeta });
+                } finally {
+                    card.style.opacity = '';
+                }
+            });
+            card.innerHTML = `
+                <div class=\"thumb\">
+                    <img src=\"${this.escapeAttribute(thumbUrl)}\" alt=\"${this.escapeAttribute(title)}\" loading=\"lazy\"/>
+                </div>
+                <div class=\"meta\">
+                    <div class=\"title\" title=\"${this.escapeAttribute(title)}\">${this.escapeHtml(title)}</div>
+                    <div class=\"sub\">${this.escapeHtml(subText)}</div>
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+        container.appendChild(grid);
+    }
+
+    async startYouTubeSession(videoId, metadata) {
+        // Show processing UI similar to file upload flow
+        this.showProcessingProgress();
+        try {
+            const res = await fetch(`/api/yt/start/${encodeURIComponent(videoId)}`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.error || 'Failed to start YouTube session');
+            }
+            this.currentSession = data;
+            // Begin simulated processing progress and player setup
+            this.simulateProcessingProgress();
+            this.createStemsPlayer();
+            this.scheduler.chunkDuration = this.currentSession.chunk_duration || 5.0;
+            this.scheduler.shouldAutoStart = true;
+            this.startPolling();
+            this.showPlayerActiveUI();
+            // Kick off lyrics fetch with available metadata
+            if (metadata && (metadata.title || metadata.artist)) {
+                this.loadLyricsForCurrentTrack({
+                    title: metadata.title || '',
+                    artist: metadata.artist || ''
+                });
+            } else {
+                // Clear lyrics if none
+                this.parseAndSetLyrics('');
+            }
+        } catch (e) {
+            this.showError(e.message);
+        }
+    }
+
+    async loadLyricsForCurrentTrack(metadata = null) {
+        try {
+            if (!metadata || !metadata.title || !metadata.artist) return;
+            const qs = new URLSearchParams({ title: metadata.title, artist: metadata.artist });
+            const res = await fetch(`/api/lyrics?${qs.toString()}`);
+            const data = await res.json();
+            if (!res.ok || !data.lrc) return;
+            this.parseAndSetLyrics(data.lrc);
+        } catch (e) {
+            // silent fail
+        }
+    }
+
+    parseAndSetLyrics(lrcText) {
+        const lines = String(lrcText || '').split(/\r?\n/);
+        const entries = [];
+        for (const line of lines) {
+            const match = line.match(/\[(\d{2}):(\d{2})(?:\.(\d{1,2}))?\]\s*(.*)/);
+            if (!match) continue;
+            const mm = parseInt(match[1], 10);
+            const ss = parseInt(match[2], 10);
+            const cs = match[3] ? parseInt(match[3].padEnd(2, '0'), 10) : 0;
+            const time = mm * 60 + ss + cs / 100;
+            const text = match[4] || '';
+            entries.push({ time, text });
+        }
+        entries.sort((a, b) => a.time - b.time);
+        this.lyrics.entries = entries;
+        this.lyrics.activeIndex = -1;
+        this.renderLyrics(-1);
+    }
+
+    updateLyricsAtTime(currentSeconds) {
+        const entries = this.lyrics.entries;
+        if (!entries || entries.length === 0) return;
+        let low = 0, high = entries.length - 1, best = -1;
+        while (low <= high) {
+            const mid = (low + high) >> 1;
+            if (entries[mid].time <= currentSeconds) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        if (best !== this.lyrics.activeIndex) {
+            this.lyrics.activeIndex = best;
+            this.renderLyrics(best);
+        }
+    }
+
+    renderLyrics(activeIndex) {
+        const container = this.lyricsContainer;
+        if (!container) return;
+        container.innerHTML = '';
+        const entries = this.lyrics.entries;
+        if (!entries || entries.length === 0) {
+            const p = document.createElement('p');
+            p.textContent = 'No lyrics loaded.';
+            container.appendChild(p);
+            return;
+        }
+        const start = Math.max(0, activeIndex - 1);
+        const end = Math.min(entries.length - 1, (activeIndex < 0 ? 1 : activeIndex) + 2);
+        for (let i = start; i <= end; i++) {
+            const div = document.createElement('div');
+            div.className = 'lyrics-line';
+            div.textContent = entries[i].text || '';
+            if (i < activeIndex) div.classList.add('prev');
+            if (i === activeIndex) div.classList.add('current');
+            if (i > activeIndex) div.classList.add('next');
+            container.appendChild(div);
+        }
+    }
+
+    applyAdvancedVisibility(fromUserToggle = false) {
+        const stemsContainer = document.getElementById('stemsContainer');
+        if (!stemsContainer) return;
+        const tracks = stemsContainer.querySelectorAll('.track');
+        tracks.forEach((el) => {
+            const name = (el.dataset.stemName || '').toLowerCase();
+            const isVocal = name.includes('voc') || name.includes('vocal') || name === 'vocals' || name === 'sing' || name === 'vocal';
+            if (this.isAdvanced) {
+                el.classList.remove('hidden-simple');
+            } else {
+                if (!isVocal) el.classList.add('hidden-simple'); else el.classList.remove('hidden-simple');
+            }
+        });
+        // Handle volume state persistence and reset behavior
+        if (fromUserToggle) {
+            if (this.isAdvanced) {
+                // Capture current non-vocal volumes so we can restore when toggled off
+                this.originalNonVocalVolumes = {};
+                Object.keys(this.trackStates).forEach((stem) => {
+                    const name = stem.toLowerCase();
+                    const isVocal = name.includes('voc') || name.includes('vocal') || name === 'vocals' || name === 'sing' || name === 'vocal';
+                    if (!isVocal) {
+                        this.originalNonVocalVolumes[stem] = this.trackStates[stem]?.volume ?? 1.0;
+                    }
+                });
+            } else {
+                // Reset non-vocals to 100%, re-enable them, and restore sliders/toggles
+                const stems = Object.keys(this.trackStates || {});
+                stems.forEach((stem) => {
+                    const name = (stem || '').toLowerCase();
+                    const isVocal = name.includes('voc') || name.includes('vocal') || name === 'vocals' || name === 'sing' || name === 'vocal';
+                    if (!isVocal) {
+                        // Set volume to 100% and enable
+                        this.setStemVolume(stem, 1.0);
+                        const state = this.trackStates[stem];
+                        if (state) {
+                            state.enabled = true;
+                            if (state.gainNode) state.gainNode.gain.value = state.volume;
+                        }
+                        // Update UI if present
+                        const trackEl = document.getElementById(`stem-${stem}`) || Array.from(document.querySelectorAll('.track')).find(t => (t.dataset.stemName || '').toLowerCase() === name);
+                        if (trackEl) {
+                            const slider = trackEl.querySelector('.volume-slider');
+                            const label = trackEl.querySelector('.volume-label');
+                            const toggleSwitch = trackEl.querySelector('.track-toggle .toggle-switch');
+                            const toggleLabel = trackEl.querySelector('.track-toggle span');
+                            if (slider) slider.value = '100';
+                            if (label) label.textContent = '100%';
+                            if (toggleSwitch) toggleSwitch.classList.add('active');
+                            if (toggleLabel) toggleLabel.textContent = 'Enabled';
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    formatAuthors(authorField) {
+        if (!authorField) return '';
+        if (typeof authorField === 'string') return authorField;
+        if (Array.isArray(authorField)) {
+            return authorField.map((a) => (a && (a.name || a.artist || a.author || a.toString()))).filter(Boolean).join(', ');
+        }
+        if (typeof authorField === 'object') {
+            return authorField.name || authorField.artist || authorField.author || '';
+        }
+        return '';
+    }
+
+    escapeAttribute(unsafe) {
+        return String(unsafe)
+            .replaceAll('&', '&amp;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#039;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;');
+    }
+
+    escapeHtml(unsafe) {
+        return unsafe
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#039;');
+    }
 }
 
 // Global functions for modal
@@ -839,5 +1216,5 @@ function closeErrorModal() {
 
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new TrackFusionApp();
+    new InstantKaraokeApp();
 });

@@ -9,3 +9,4 @@ flask-cors
 werkzeug
 dora-search
 syncedlyrics
+ytmusicapi

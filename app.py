@@ -12,6 +12,11 @@ from audio_separation import load_model, process
 import threading
 import time
 from datetime import datetime, timedelta
+from ytmusic import search as yt_search
+from ytdl import get_audio_stream
+import subprocess
+import io
+from lyrics import search_lyrics
 
 app = Flask(
     __name__,
@@ -315,6 +320,139 @@ def cleanup_session(session_id):
 def health_check():
     """Health check endpoint"""
     return jsonify({'status': 'healthy', 'model_loaded': model is not None})
+
+@app.route('/api/yt/search')
+def yt_search_endpoint():
+    """Proxy YouTube Music search results for the frontend."""
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'error': 'missing q'}), 400
+    try:
+        results = yt_search(query)
+        return jsonify({'results': results})
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+
+@app.route('/api/lyrics')
+def lyrics_endpoint():
+    title = request.args.get('title', '').strip()
+    artist = request.args.get('artist', '').strip()
+    if not title or not artist:
+        return jsonify({'error': 'missing title or artist'}), 400
+    try:
+        lrc = search_lyrics(title=title, artist=artist)
+        return jsonify({'lrc': lrc or ''})
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+
+def _read_remote_chunk_wav(stream_url: str, start_s: float, duration_s: float, target_sr: int = 44100):
+    """Use ffmpeg to read a specific window from the remote audio stream and return int16 stereo array and sample rate.
+    Returns (audio_np_int16, sample_rate). If no audio (end of stream), returns (None, None).
+    """
+    # Build ffmpeg command: seek then read window, stereo, resample, output wav to stdout
+    cmd = [
+        'ffmpeg',
+        '-ss', str(max(0.0, float(start_s))),
+        '-t', str(float(duration_s)),
+        '-i', stream_url,
+        '-vn',
+        '-ac', '2',
+        '-ar', str(target_sr),
+        '-f', 'wav',
+        'pipe:1'
+    ]
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        if proc.returncode != 0:
+            return None, None
+        data = proc.stdout
+        if not data:
+            return None, None
+        import soundfile as sf
+        import numpy as np
+        buf = io.BytesIO(data)
+        audio_data, sr = sf.read(buf, always_2d=True)
+        # Ensure stereo
+        if audio_data.shape[1] == 1:
+            audio_data = np.repeat(audio_data, 2, axis=1)
+        # Convert float -> int16
+        if audio_data.dtype != np.int16:
+            audio_data = (audio_data * 32767).astype(np.int16)
+        return audio_data, sr
+    except Exception:
+        return None, None
+
+@app.route('/api/yt/start/<video_id>', methods=['POST'])
+def yt_start_session(video_id):
+    """Start separation pipeline from a YouTube video by streaming audio chunks without full download."""
+    try:
+        # Build YouTube watch URL as instructed
+        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+        # Get direct audio stream URL (googlevideo) via yt_dlp, no download
+        stream_url = get_audio_stream(youtube_url)
+
+        # Session prepare
+        session_id = str(uuid.uuid4())
+        session_folder = os.path.join(PROCESSED_FOLDER, session_id)
+        os.makedirs(session_folder, exist_ok=True)
+
+        chunk_duration = 5.0
+        target_sr = 44100
+
+        SESSIONS[session_id] = {
+            'folder': session_folder,
+            'sample_rate': target_sr,
+            'chunk_duration': chunk_duration,
+            'total_chunks': 0,  # unknown initially
+            'ready': {},
+            'stems': set(),
+            'done': False,
+            'error': None,
+            'created_at': datetime.now(),
+            'source': {'type': 'youtube', 'video_id': video_id, 'stream_url': stream_url},
+        }
+
+        def process_stream():
+            try:
+                mdl = load_model_safe()
+                stem_buffers = {}
+                chunk_index = 0
+                while True:
+                    start_time = chunk_index * chunk_duration
+                    audio_chunk, sr = _read_remote_chunk_wav(stream_url, start_time, chunk_duration, target_sr)
+                    if audio_chunk is None or len(audio_chunk) == 0:
+                        break
+                    # Process with model
+                    separated = process(audio_array=audio_chunk, model=mdl, device='cpu')
+                    for stem_name, stem_audio in separated.items():
+                        SESSIONS[session_id]['stems'].add(stem_name)
+                        stem_filename = f"chunk_{chunk_index:03d}_{stem_name}.wav"
+                        stem_path = os.path.join(session_folder, stem_filename)
+                        sf.write(stem_path, stem_audio, sr)
+                        SESSIONS[session_id]['ready'].setdefault(stem_name, set()).add(chunk_index)
+                        stem_buffers.setdefault(stem_name, []).append(stem_audio)
+                    chunk_index += 1
+
+                # Finalize continuous stems
+                for stem_name, parts in stem_buffers.items():
+                    full = crossfade_concat(parts, target_sr, fade_ms=10.0)
+                    stem_filename = f"{stem_name}.wav"
+                    stem_path = os.path.join(session_folder, stem_filename)
+                    sf.write(stem_path, full, target_sr)
+                SESSIONS[session_id]['total_chunks'] = chunk_index
+                SESSIONS[session_id]['done'] = True
+            except Exception as e:
+                SESSIONS[session_id]['error'] = str(e)
+
+        threading.Thread(target=process_stream, daemon=True).start()
+
+        return jsonify({
+            'session_id': session_id,
+            'sample_rate': target_sr,
+            'chunk_duration': chunk_duration,
+        })
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
 if __name__ == '__main__':
     # Pre-load the model on startup

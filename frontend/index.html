@@ -3,20 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TrackFusion - Audio Separation</title>
+    <title>Instant Karaoke - Audio Separation</title>
     <link rel="stylesheet" href="/static/style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
 <body>
     <div class="container">
         <header>
-            <h1><i class="fas fa-music"></i> TrackFusion</h1>
+            <h1><i class="fas fa-music"></i> Instant Karaoke</h1>
             <p>Upload audio and separate into individual tracks</p>
         </header>
 
         <main>
+            <!-- Player Section (always visible) -->
+            <section class="player-section" id="playerSection" style="display: block;">
+                <div class="player-header">
+                    <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
+                    <div class="player-controls" id="playerControls" style="display: none;">
+                        <button id="playPauseBtn" class="control-btn">
+                            <i class="fas fa-play"></i> Play
+                        </button>
+                        <button id="stopAllBtn" class="control-btn">
+                            <i class="fas fa-stop"></i> Stop
+                        </button>
+                        <div style="display:flex;align-items:center;gap:10px;min-width:240px;">
+                            <span id="currentTimeLabel">0:00</span>
+                            <input id="seekSlider" type="range" min="0" max="100" value="0" style="flex:1;">
+                            <span id="totalTimeLabel">0:00</span>
+                        </div>
+                        <div class="track-toggle" id="advancedToggle" title="Show/hide advanced stem controls">
+                            <div class="toggle-switch" id="advancedToggleSwitch"></div>
+                            <span id="advancedToggleLabel">Advanced</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="playerEmptyState" class="player-empty">Choose a song to begin</div>
+
+                <div class="player-body">
+                    <div class="left-pane">
+                        <div class="tracks-container" id="stemsContainer">
+                            <!-- Stems will be dynamically added here -->
+                        </div>
+                    </div>
+                    <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
+                        <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics</div>
+                        <div class="lyrics-content" id="lyricsContainer">
+                            <p>No lyrics loaded.</p>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+
+            <!-- Processing Section (moved near the top, under player) -->
+            <section class="processing-section" id="processingSection" style="display: none;">
+                <div class="processing-content">
+                    <i class="fas fa-cogs fa-spin"></i>
+                    <h3>Processing Audio</h3>
+                    <p id="processingText">Separating tracks...</p>
+                    <div class="processing-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="processingProgressFill"></div>
+                        </div>
+                        <p id="processingProgressText">0%</p>
+                    </div>
+                </div>
+            </section>
+
+            <div class="tabs">
+                <button class="tab active" data-target="youtubeSection"><i class="fab fa-youtube"></i> YouTube</button>
+                <button class="tab" data-target="uploadSection"><i class="fas fa-upload"></i> Upload</button>
+            </div>
+
+            <!-- YouTube Section -->
+            <section class="youtube-section" id="youtubeSection" style="display: block;">
+                <div class="search-bar">
+                    <input type="text" id="youtubeSearchInput" placeholder="Search YouTube for a song or paste a URL">
+                    <button class="upload-btn" id="youtubeSearchBtn"><i class="fas fa-search"></i> Search</button>
+                </div>
+                <div class="youtube-results" id="youtubeResults">
+                    <div class="placeholder"><i class="fas fa-info-circle"></i> Enter a query to search YouTube.</div>
+                </div>
+            </section>
             <!-- Upload Section -->
-            <section class="upload-section" id="uploadSection">
+            <section class="upload-section" id="uploadSection" style="display: none;">
                 <div class="upload-area" id="uploadArea">
                     <div class="upload-content">
                         <i class="fas fa-cloud-upload-alt"></i>
@@ -36,57 +106,9 @@
                 </div>
             </section>
 
-            <!-- Processing Section -->
-            <section class="processing-section" id="processingSection" style="display: none;">
-                <div class="processing-content">
-                    <i class="fas fa-cogs fa-spin"></i>
-                    <h3>Processing Audio</h3>
-                    <p id="processingText">Separating tracks...</p>
-                    <div class="processing-progress">
-                        <div class="progress-bar">
-                            <div class="progress-fill" id="processingProgressFill"></div>
-                        </div>
-                        <p id="processingProgressText">0%</p>
-                    </div>
-                </div>
-            </section>
+            
 
-            <!-- Player Section -->
-            <section class="player-section" id="playerSection" style="display: none;">
-                <div class="player-header">
-                    <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
-                    <div class="player-controls">
-                        <button id="playPauseBtn" class="control-btn">
-                            <i class="fas fa-play"></i> Play
-                        </button>
-                        <button id="stopAllBtn" class="control-btn">
-                            <i class="fas fa-stop"></i> Stop
-                        </button>
-                        <div style="display:flex;align-items:center;gap:10px;min-width:240px;">
-                            <span id="currentTimeLabel">0:00</span>
-                            <input id="seekSlider" type="range" min="0" max="100" value="0" style="flex:1;">
-                            <span id="totalTimeLabel">0:00</span>
-                        </div>
-                        <button id="resetBtn" class="control-btn">
-                            <i class="fas fa-redo"></i> New File
-                        </button>
-                    </div>
-                </div>
-
-                <div class="player-body">
-                    <div class="left-pane">
-                        <div class="tracks-container" id="stemsContainer">
-                            <!-- Stems will be dynamically added here -->
-                        </div>
-                    </div>
-                    <aside class="lyrics-pane" id="lyricsPane">
-                        <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics</div>
-                        <div class="lyrics-content" id="lyricsContainer">
-                            <p>No lyrics loaded.</p>
-                        </div>
-                    </aside>
-                </div>
-            </section>
+            
         </main>
 
         <!-- Error Modal -->

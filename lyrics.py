@@ -11,5 +11,5 @@ def search_lyrics(title, artist, enhanced=False):
         raise Exception(f"Failed to search lyrics: {e}")
 
 if __name__ == "__main__":
-        lrc = search_lyrics("my universe", "Coldplay", enhanced=True)
-        print(lrc)
+    lrc = search_lyrics("my universe", "Coldplay")
+    print(lrc)
