@@ -3,13 +3,15 @@ from flask_cors import CORS
 import numpy as np
 import os
 import tempfile
+import atexit
 import uuid
 from werkzeug.utils import secure_filename
 import soundfile as sf
 from pydub import AudioSegment
-from test import load_model, process
+from audio_separation import load_model, process
 import threading
 import time
+from datetime import datetime, timedelta
 
 app = Flask(
     __name__,
@@ -24,13 +26,77 @@ model_lock = threading.Lock()
 SESSIONS = {}
 
 # Configuration
-UPLOAD_FOLDER = 'uploads'
-PROCESSED_FOLDER = 'processed'
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac', 'm4a', 'ogg'}
 
-# Create directories if they don't exist
+# Create a temporary directory that will be automatically cleaned up
+TEMP_BASE_DIR = tempfile.mkdtemp(prefix="instant_karaoke_")
+UPLOAD_FOLDER = os.path.join(TEMP_BASE_DIR, 'uploads')
+PROCESSED_FOLDER = os.path.join(TEMP_BASE_DIR, 'processed')
+
+# Create subdirectories
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+
+def cleanup_temp_files():
+    """Clean up temporary files on app shutdown"""
+    import shutil
+    try:
+        if os.path.exists(TEMP_BASE_DIR):
+            shutil.rmtree(TEMP_BASE_DIR)
+            print(f"Cleaned up temporary directory: {TEMP_BASE_DIR}")
+    except Exception as e:
+        print(f"Error cleaning up temp files: {e}")
+
+def cleanup_session_files(session_id):
+    """Clean up files for a specific session"""
+    import shutil
+    try:
+        # Clean up session folder
+        session_folder = os.path.join(PROCESSED_FOLDER, session_id)
+        if os.path.exists(session_folder):
+            shutil.rmtree(session_folder)
+            print(f"Cleaned up session folder: {session_id}")
+        
+        # Clean up uploaded file if it exists
+        if session_id in SESSIONS and 'filepath' in SESSIONS[session_id]:
+            filepath = SESSIONS[session_id]['filepath']
+            if os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"Cleaned up uploaded file: {filepath}")
+    except Exception as e:
+        print(f"Error cleaning up session {session_id}: {e}")
+
+def cleanup_old_sessions():
+    """Clean up sessions older than 1 hour"""
+    cutoff_time = datetime.now() - timedelta(hours=1)
+    sessions_to_cleanup = []
+    
+    for session_id, session_data in SESSIONS.items():
+        if session_data.get('created_at', datetime.now()) < cutoff_time:
+            sessions_to_cleanup.append(session_id)
+    
+    for session_id in sessions_to_cleanup:
+        cleanup_session_files(session_id)
+        if session_id in SESSIONS:
+            del SESSIONS[session_id]
+        print(f"Auto-cleaned up old session: {session_id}")
+
+def background_cleanup_task():
+    """Background task to periodically clean up old sessions"""
+    while True:
+        try:
+            cleanup_old_sessions()
+            time.sleep(3600)  # Run every hour
+        except Exception as e:
+            print(f"Error in background cleanup: {e}")
+            time.sleep(60)  # Wait 1 minute before retrying
+
+# Register cleanup function to run on app shutdown
+atexit.register(cleanup_temp_files)
+
+print(f"Temporary files will be stored in: {TEMP_BASE_DIR}")
+print(f"Upload folder: {UPLOAD_FOLDER}")
+print(f"Processed folder: {PROCESSED_FOLDER}")
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -142,9 +208,12 @@ def upload_audio():
         session_folder = os.path.join(PROCESSED_FOLDER, session_id)
         os.makedirs(session_folder, exist_ok=True)
         
-        # Save uploaded file
+        # Save uploaded file with unique name to avoid conflicts
         filename = secure_filename(file.filename)
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        # Add session ID to filename to make it unique
+        base_name, ext = os.path.splitext(filename)
+        unique_filename = f"{session_id}_{base_name}{ext}"
+        filepath = os.path.join(UPLOAD_FOLDER, unique_filename)
         file.save(filepath)
         
         # Load audio and split into chunks
@@ -161,6 +230,8 @@ def upload_audio():
             'stems': set(),
             'done': False,
             'error': None,
+            'created_at': datetime.now(),
+            'filepath': filepath,  # Store filepath for cleanup
         }
 
         def process_session():
@@ -229,6 +300,17 @@ def status(session_id):
         'error': state['error'],
     })
 
+@app.route('/api/cleanup/<session_id>', methods=['POST'])
+def cleanup_session(session_id):
+    """Clean up a specific session's files"""
+    try:
+        cleanup_session_files(session_id)
+        if session_id in SESSIONS:
+            del SESSIONS[session_id]
+        return jsonify({'message': f'Session {session_id} cleaned up successfully'})
+    except Exception as e:
+        return jsonify({'error': f'Failed to clean up session: {e}'}), 500
+
 @app.route('/api/health')
 def health_check():
     """Health check endpoint"""
@@ -237,5 +319,10 @@ def health_check():
 if __name__ == '__main__':
     # Pre-load the model on startup
     load_model_safe()
+    
+    # Start background cleanup task
+    cleanup_thread = threading.Thread(target=background_cleanup_task, daemon=True)
+    cleanup_thread.start()
+    print("Started background cleanup task")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
