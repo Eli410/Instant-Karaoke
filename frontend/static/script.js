@@ -207,6 +207,7 @@ class InstantKaraokeApp {
             // Hide upload progress and show processing
             this.hideUploadProgress();
             this.showProcessingProgress();
+            this.scrollPlayerIntoView();
             
             // Simulate processing progress (since backend doesn't provide real-time updates)
             this.simulateProcessingProgress();
@@ -261,6 +262,17 @@ class InstantKaraokeApp {
     hideProcessingProgress() {
         document.getElementById('processingSection').style.display = 'none';
     }
+    
+    scrollPlayerIntoView() {
+        try {
+            const section = document.getElementById('playerSection');
+            if (!section) return;
+            const rect = section.getBoundingClientRect();
+            const viewportH = window.innerHeight || document.documentElement.clientHeight;
+            const mostlyVisible = rect.top >= 0 && rect.bottom <= viewportH;
+            if (!mostlyVisible) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (_) {}
+    }
 
     simulateProcessingProgress() {
         const progressFill = document.getElementById('processingProgressFill');
@@ -303,7 +315,10 @@ class InstantKaraokeApp {
                 const arrayBuffer = await response.arrayBuffer();
                 const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
                 this.audioBuffers[stemName] = audioBuffer;
-                this.trackStates[stemName] = { enabled: true, volume: 1.0, gainNode: null };
+                const nameLower = (stemName || '').toLowerCase();
+                const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
+                const defaultEnabled = this.isAdvanced ? true : !isVocal;
+                this.trackStates[stemName] = { enabled: defaultEnabled, volume: 1.0, gainNode: null };
                 // Update duration if longer
                 this.transport.duration = Math.max(this.transport.duration, audioBuffer.duration);
                 this.updateDurationLabels();
@@ -379,7 +394,10 @@ class InstantKaraokeApp {
         const buf = await res.arrayBuffer();
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
         this.audioBuffers[stemName] = audioBuffer;
-        this.trackStates[stemName] = this.trackStates[stemName] || { enabled: true, volume: 1.0, gainNode: null };
+        const nameLower = (stemName || '').toLowerCase();
+        const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
+        const defaultEnabled = this.isAdvanced ? true : !isVocal;
+        this.trackStates[stemName] = this.trackStates[stemName] || { enabled: defaultEnabled, volume: 1.0, gainNode: null };
         this.transport.duration = Math.max(this.transport.duration, audioBuffer.duration);
         this.updateDurationLabels();
     }
@@ -396,7 +414,10 @@ class InstantKaraokeApp {
         const res = await fetch(url);
         const buf = await res.arrayBuffer();
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
-        const state = this.trackStates[stemName] || { enabled: true, volume: 0.7, gainNode: null };
+        const nameLower = (stemName || '').toLowerCase();
+        const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
+        const defaultEnabled = this.isAdvanced ? true : !isVocal;
+        const state = this.trackStates[stemName] || { enabled: defaultEnabled, volume: 0.7, gainNode: null };
         this.trackStates[stemName] = state;
         // Create a persistent gain node per stem and keep it connected once
         if (!state.gainNode) {
@@ -583,11 +604,14 @@ class InstantKaraokeApp {
         trackToggle.className = 'track-toggle';
         
         const toggleSwitch = document.createElement('div');
-        toggleSwitch.className = 'toggle-switch active';
+        const nameLower = (stemName || '').toLowerCase();
+        const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
+        const defaultEnabled = this.isAdvanced ? true : !isVocal;
+        toggleSwitch.className = 'toggle-switch' + (defaultEnabled ? ' active' : '');
         toggleSwitch.onclick = (event) => this.toggleStem(event, stemName);
         
         const toggleLabel = document.createElement('span');
-        toggleLabel.textContent = 'Enabled';
+        toggleLabel.textContent = defaultEnabled ? 'Enabled' : 'Disabled';
         
         trackToggle.appendChild(toggleSwitch);
         trackToggle.appendChild(toggleLabel);
@@ -641,11 +665,14 @@ class InstantKaraokeApp {
         trackToggle.className = 'track-toggle';
         
         const toggleSwitch = document.createElement('div');
-        toggleSwitch.className = 'toggle-switch active';
+        const nameLower = (stemName || '').toLowerCase();
+        const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
+        const defaultEnabled = this.isAdvanced ? true : !isVocal;
+        toggleSwitch.className = 'toggle-switch' + (defaultEnabled ? ' active' : '');
         toggleSwitch.onclick = (event) => this.toggleTrack(event, chunkIndex, stemName);
         
         const toggleLabel = document.createElement('span');
-        toggleLabel.textContent = 'Enabled';
+        toggleLabel.textContent = defaultEnabled ? 'Enabled' : 'Disabled';
         
         trackToggle.appendChild(toggleSwitch);
         trackToggle.appendChild(toggleLabel);
@@ -1161,6 +1188,7 @@ class InstantKaraokeApp {
     async startYouTubeSession(videoId, metadata) {
         // Show processing UI similar to file upload flow
         this.showProcessingProgress();
+        this.scrollPlayerIntoView();
         try {
             const res = await fetch(`/api/yt/start/${encodeURIComponent(videoId)}`, { method: 'POST' });
             const data = await res.json();
@@ -1181,6 +1209,7 @@ class InstantKaraokeApp {
             this.scheduler.shouldAutoStart = true;
             this.startPolling();
             this.showPlayerActiveUI();
+            this.scrollPlayerIntoView();
             // Render media (video or cover) using returned source URLs and provided metadata
             this.renderMediaPane({
                 videoUrl: (data.source && data.source.video_url) || '',
@@ -1396,6 +1425,25 @@ class InstantKaraokeApp {
                         this.originalNonVocalVolumes[stem] = this.trackStates[stem]?.volume ?? 1.0;
                     }
                 });
+                // Ensure vocals are enabled by default in advanced mode
+                Object.keys(this.trackStates).forEach((stem) => {
+                    const name = (stem || '').toLowerCase();
+                    const isVocal = name.includes('voc') || name.includes('vocal') || name === 'vocals' || name === 'sing' || name === 'vocal';
+                    if (isVocal) {
+                        const state = this.trackStates[stem];
+                        if (state) {
+                            state.enabled = true;
+                            if (state.gainNode) state.gainNode.gain.value = state.volume;
+                        }
+                        const trackEl = document.getElementById(`stem-${stem}`) || Array.from(document.querySelectorAll('.track')).find(t => (t.dataset.stemName || '').toLowerCase() === name);
+                        if (trackEl) {
+                            const toggleSwitch = trackEl.querySelector('.track-toggle .toggle-switch');
+                            const toggleLabel = trackEl.querySelector('.track-toggle span');
+                            if (toggleSwitch) toggleSwitch.classList.add('active');
+                            if (toggleLabel) toggleLabel.textContent = 'Enabled';
+                        }
+                    }
+                });
             } else {
                 // Reset non-vocals to 100%, re-enable them, and restore sliders/toggles
                 const stems = Object.keys(this.trackStates || {});
@@ -1421,6 +1469,25 @@ class InstantKaraokeApp {
                             if (label) label.textContent = '100%';
                             if (toggleSwitch) toggleSwitch.classList.add('active');
                             if (toggleLabel) toggleLabel.textContent = 'Enabled';
+                        }
+                    }
+                });
+                // Ensure vocals are disabled by default in simple mode
+                stems.forEach((stem) => {
+                    const name = (stem || '').toLowerCase();
+                    const isVocal = name.includes('voc') || name.includes('vocal') || name === 'vocals' || name === 'sing' || name === 'vocal';
+                    if (isVocal) {
+                        const state = this.trackStates[stem];
+                        if (state) {
+                            state.enabled = false;
+                            if (state.gainNode) state.gainNode.gain.value = 0;
+                        }
+                        const trackEl = document.getElementById(`stem-${stem}`) || Array.from(document.querySelectorAll('.track')).find(t => (t.dataset.stemName || '').toLowerCase() === name);
+                        if (trackEl) {
+                            const toggleSwitch = trackEl.querySelector('.track-toggle .toggle-switch');
+                            const toggleLabel = trackEl.querySelector('.track-toggle span');
+                            if (toggleSwitch) toggleSwitch.classList.remove('active');
+                            if (toggleLabel) toggleLabel.textContent = 'Disabled';
                         }
                     }
                 });
