@@ -295,11 +295,46 @@ header p {
 /* Player body layout */
 .player-body {
     display: grid;
-    grid-template-columns: 1fr; /* single column: lyrics pane spans full width */
+    grid-template-columns: 1fr; /* single column full width */
     gap: 20px;
 }
 
-.left-pane { display: none; }
+.left-pane {
+    display: block;
+}
+
+/* Place media and tracks in left column, lyrics in right column */
+.left-pane { grid-column: 1; }
+.tracks-container { grid-column: 1; }
+.lyrics-pane { grid-column: 1; }
+
+.media-wrapper {
+    position: relative;
+    width: 100%;
+    background: #fff;
+    border: 1px solid #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Space between media and lyrics */
+#mediaPane { margin-bottom: 12px; }
+
+.media-wrapper img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.media-wrapper video {
+    width: 100%;
+    height: 100%;
+    background: #fff;
+}
 
 .lyrics-pane {
     background: #f9fafc;
@@ -310,6 +345,7 @@ header p {
     max-height: 520px;
     position: sticky;
     top: 20px;
+    overscroll-behavior: contain; /* prevent scroll chaining to page */
 }
 
 .lyrics-header {
@@ -326,6 +362,8 @@ header p {
     color: #333;
     background: linear-gradient(180deg, #ffffff 0%, #f7f9ff 100%);
     border-radius: 8px;
+    overscroll-behavior: contain; /* keep scroll within the container */
+    overflow-anchor: none; /* prevent browser from auto-adjusting page scroll */
 }
 
 .lyrics-line {
@@ -378,7 +416,9 @@ header p {
 .refine-search {
     display: flex;
     gap: 8px;
-    margin-top: 6px;
+    margin-top: 0;
+    align-items: center; /* vertically align inputs and button */
+    transform: translateY(-2px); /* nudge up to align with control buttons */
 }
 
 .refine-search input[type="text"] {
@@ -481,6 +521,7 @@ header p {
     border-radius: 10px;
     background: #fff;
     align-items: center;
+    width: 100%;
 }
 
 .track {

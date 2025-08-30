@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from .ytmusic import search as yt_search
-from .ytdl import get_audio_stream
+from .ytdl import get_streams
 import subprocess
 import io
 from .lyrics import search_lyrics
@@ -292,8 +292,55 @@ def yt_search_endpoint():
     if not query:
         return jsonify({'error': 'missing q'}), 400
     try:
-        results = yt_search(query)
-        return jsonify({'results': results})
+        def _dedupe(results_list):
+            seen = set()
+            deduped = []
+            for r in results_list:
+                key = r.get('videoId') or r.get('url') or r.get('title')
+                if key and key not in seen:
+                    seen.add(key)
+                    deduped.append(r)
+            return deduped
+
+        videos = yt_search(query, 'videos') or []
+        for r in videos:
+            try:
+                r['type'] = 'video'
+            except Exception:
+                pass
+        songs = yt_search(query, 'songs') or []
+        for r in songs:
+            try:
+                r['type'] = 'song'
+            except Exception:
+                pass
+        songs_top10 = _dedupe(songs)[:10]
+        videos_top10 = _dedupe(videos)[:10]
+        def _views_to_int(v):
+            try:
+                if v is None:
+                    return 0
+                if isinstance(v, (int, float)):
+                    return int(v)
+                s = str(v).strip().lower().replace('views', '').strip()
+                s = s.replace(',', '')
+                mult = 1
+                if s.endswith('k'):
+                    mult = 1_000
+                    s = s[:-1]
+                elif s.endswith('m'):
+                    mult = 1_000_000
+                    s = s[:-1]
+                elif s.endswith('b'):
+                    mult = 1_000_000_000
+                    s = s[:-1]
+                num = float(s)
+                return int(num * mult)
+            except Exception:
+                return 0
+        combined = songs_top10 + videos_top10
+        combined.sort(key=lambda x: _views_to_int(x.get('views')), reverse=True)
+        return jsonify({'results': combined})
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -347,7 +394,9 @@ def _read_remote_chunk_wav(stream_url: str, start_s: float, duration_s: float, t
 def yt_start_session(video_id):
     try:
         youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-        stream_url = get_audio_stream(youtube_url)
+        streams = get_streams(youtube_url)
+        audio_url = (streams or {}).get('audio_url')
+        video_url = (streams or {}).get('video_url')
         session_id = str(uuid.uuid4())
         session_folder = os.path.join(PROCESSED_FOLDER, session_id)
         os.makedirs(session_folder, exist_ok=True)
@@ -363,7 +412,12 @@ def yt_start_session(video_id):
             'done': False,
             'error': None,
             'created_at': datetime.now(),
-            'source': {'type': 'youtube', 'video_id': video_id, 'stream_url': stream_url},
+            'source': {
+                'type': 'youtube',
+                'video_id': video_id,
+                'audio_url': audio_url,
+                'video_url': video_url,
+            },
         }
 
         def process_stream():
@@ -373,7 +427,9 @@ def yt_start_session(video_id):
                 chunk_index = 0
                 while True:
                     start_time = chunk_index * chunk_duration
-                    audio_chunk, sr = _read_remote_chunk_wav(stream_url, start_time, chunk_duration, target_sr)
+                    if not audio_url:
+                        break
+                    audio_chunk, sr = _read_remote_chunk_wav(audio_url, start_time, chunk_duration, target_sr)
                     if audio_chunk is None or len(audio_chunk) == 0:
                         break
                     separated = process(audio_array=audio_chunk, model=mdl, device='cpu')
@@ -400,6 +456,10 @@ def yt_start_session(video_id):
             'session_id': session_id,
             'sample_rate': target_sr,
             'chunk_duration': chunk_duration,
+            'source': {
+                'audio_url': audio_url,
+                'video_url': video_url,
+            }
         })
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500

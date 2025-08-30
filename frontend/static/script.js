@@ -98,6 +98,13 @@ class InstantKaraokeApp {
         this.lyricsContainer = document.getElementById('lyricsContainer');
     }
 
+    resetLyricsOffset() {
+        if (!this.lyrics) this.initializeLyrics();
+        this.lyrics.offset = 0.0;
+        const value = document.getElementById('lyricsOffsetValue');
+        if (value) value.textContent = '0.0s';
+    }
+
     initializeAudioContext() {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -188,6 +195,8 @@ class InstantKaraokeApp {
             const result = await response.json();
             this.currentSession = result;
             this.activeSessionId = result.session_id;
+            // Reset lyrics offset for a new session
+            this.resetLyricsOffset();
             // Track latest metadata for lyrics refine defaults
             try {
                 const baseName = (file.name || '').replace(/\.[^/.]+$/, '');
@@ -410,6 +419,8 @@ class InstantKaraokeApp {
             this.startTransportTicker();
             this.scheduler.startTime = now;
             this.scheduler.shouldAutoStart = false; // Prevent further auto-starts
+            // Start media playback in sync with audio when first chunk triggers auto-start
+            this.syncMediaStart(now, 0);
         } else if (!this.transport.isPlaying) {
             // Don't schedule if transport is paused/stopped
             return;
@@ -722,6 +733,8 @@ class InstantKaraokeApp {
         this.startTransportTicker();
         this.startContinuousPlayback(0);
         this.showPlayerActiveUI();
+        // Autoplay media video if present
+        this.syncMediaStart(now, 0);
     }
 
     startContinuousPlayback(offset = 0) {
@@ -776,6 +789,8 @@ class InstantKaraokeApp {
                 this.audioSources = {};
                 this.startContinuousPlayback(this.transport.pausedAt);
             }
+            // Resume video
+            this.syncMediaStart(now, this.transport.pausedAt);
         } else {
             // Pause: stop all scheduled sources and record pausedAt
             this.transport.pausedAt = this.getCurrentTime();
@@ -793,6 +808,9 @@ class InstantKaraokeApp {
             }
             this.audioSources = {};
             // Note: Keep scheduled tracking intact for resume
+            // Pause media video if present
+            const video = document.querySelector('#mediaWrapper video');
+            if (video) { try { video.pause(); } catch (_) {} }
         }
     }
 
@@ -874,6 +892,11 @@ class InstantKaraokeApp {
                 this.togglePlayPause();
                 this.togglePlayPause();
             }
+        }
+        // Sync media element currentTime
+        const video = document.querySelector('#mediaWrapper video');
+        if (video) {
+            try { video.currentTime = newTime; } catch (_) {}
         }
     }
 
@@ -1067,6 +1090,7 @@ class InstantKaraokeApp {
                 .filter(Boolean)
                 .join(' · ');
             card.setAttribute('data-video-id', item.videoId || '');
+            card.setAttribute('data-type', item.type || '');
             card.addEventListener('click', async () => {
                 const vid = item.videoId;
                 if (!vid) return;
@@ -1115,7 +1139,7 @@ class InstantKaraokeApp {
                     } else if (typeof item.author === 'string') {
                         artistMeta = item.author;
                     }
-                    await this.startYouTubeSession(vid, { title: titleMeta, artist: artistMeta });
+                    await this.startYouTubeSession(vid, { title: titleMeta, artist: artistMeta, type: item.type || '', thumbnail: item.thumbnails || '' });
                 } finally {
                     card.style.opacity = '';
                 }
@@ -1145,6 +1169,8 @@ class InstantKaraokeApp {
             }
             this.currentSession = data;
             this.activeSessionId = data.session_id;
+            // Reset lyrics offset for a new session
+            this.resetLyricsOffset();
             // Persist latest metadata for refine form
             this._latestTitle = (metadata && metadata.title) || '';
             this._latestArtist = (metadata && metadata.artist) || '';
@@ -1155,6 +1181,14 @@ class InstantKaraokeApp {
             this.scheduler.shouldAutoStart = true;
             this.startPolling();
             this.showPlayerActiveUI();
+            // Render media (video or cover) using returned source URLs and provided metadata
+            this.renderMediaPane({
+                videoUrl: (data.source && data.source.video_url) || '',
+                audioUrl: (data.source && data.source.audio_url) || '',
+                type: (metadata && metadata.type) || '',
+                thumbnail: (metadata && metadata.thumbnail) || ''
+            });
+            // Do NOT autoplay media immediately; wait for first audio chunk auto-start to sync
             // Kick off lyrics fetch with available metadata
             if (metadata && (metadata.title || metadata.artist)) {
                 this.loadLyricsForCurrentTrack({
@@ -1169,6 +1203,53 @@ class InstantKaraokeApp {
             }
         } catch (e) {
             this.showError(e.message);
+        }
+    }
+
+    renderMediaPane({ videoUrl = '', audioUrl = '', type = '', thumbnail = '' }) {
+        const wrapper = document.getElementById('mediaWrapper');
+        const pane = document.getElementById('mediaPane');
+        if (!wrapper || !pane) return;
+        wrapper.innerHTML = '';
+        const hasVideo = !!videoUrl;
+        const hasImage = !!thumbnail;
+        if (!hasVideo && !hasImage) {
+            pane.style.display = 'none';
+            return;
+        }
+        pane.style.display = '';
+        if (hasVideo) {
+            const video = document.createElement('video');
+            video.setAttribute('playsinline', '');
+            video.setAttribute('webkit-playsinline', '');
+            video.setAttribute('autoplay', '');
+            if (thumbnail) video.setAttribute('poster', thumbnail);
+            video.muted = true; // allow autoplay without user gesture
+            video.controls = false; // not standalone controls
+            video.src = videoUrl;
+            wrapper.appendChild(video);
+        } else if (hasImage) {
+            const img = document.createElement('img');
+            img.alt = 'Cover image';
+            img.src = thumbnail;
+            wrapper.appendChild(img);
+        }
+    }
+
+    syncMediaStart(startAtAudioCtx, offsetSeconds) {
+        const video = document.querySelector('#mediaWrapper video');
+        if (!video) return;
+        try {
+            video.currentTime = Math.max(0, offsetSeconds || 0);
+        } catch (_) {}
+        // Try to play immediately; some browsers may still block, but muted helps
+        const playAttempt = () => { try { const p = video.play(); if (p && typeof p.then === 'function') p.catch(() => {}); } catch (_) {} };
+        // Only attempt to play when first chunk triggers audio start; this function is called from there
+        if (video.readyState >= 2) {
+            playAttempt();
+        } else {
+            video.addEventListener('loadeddata', () => playAttempt(), { once: true });
+            video.addEventListener('canplay', () => playAttempt(), { once: true });
         }
     }
 
@@ -1270,10 +1351,9 @@ class InstantKaraokeApp {
             container.appendChild(p);
             return;
         }
-        // Smooth scrolling: render more lines and scroll to current smoothly
-        const viewportCount = 7;
-        const start = Math.max(0, (activeIndex < 0 ? 0 : activeIndex) - Math.floor(viewportCount / 2));
-        const end = Math.min(entries.length - 1, start + viewportCount - 1);
+        // Show at most 1 previous, current, and 2 next lines
+        const start = Math.max(0, (activeIndex < 0 ? 0 : activeIndex) - 1);
+        const end = Math.min(entries.length - 1, (activeIndex < 0 ? 0 : activeIndex) + 2);
         for (let i = start; i <= end; i++) {
             const div = document.createElement('div');
             div.className = 'lyrics-line';
@@ -1283,10 +1363,11 @@ class InstantKaraokeApp {
             if (i > activeIndex) div.classList.add('next');
             container.appendChild(div);
         }
-        // Scroll current line into view smoothly
+        // Center current line when possible
         const currentEl = container.querySelector('.lyrics-line.current');
-        if (currentEl && typeof currentEl.scrollIntoView === 'function') {
-            currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (currentEl) {
+            const targetTop = Math.max(0, currentEl.offsetTop - (container.clientHeight - currentEl.clientHeight) / 2);
+            container.scrollTop = targetTop;
         }
     }
 

@@ -4,23 +4,22 @@ from ytmusicapi import YTMusic
 ytmusic = YTMusic()
 
 
-def search(query):
-    search_results = ytmusic.search(query)
+def search(query, type):
+    search_results = ytmusic.search(query, filter=type)
     results = []
     for res in search_results:
-        if res.get("resultType") == "song" or res.get("resultType") == "video":
-            results.append(
-                {
-                    "title": res.get("title"),
-                    "videoId": res.get("videoId"),
-                    "duration": res.get("duration"),
-                    "thumbnails": (res.get("thumbnails") or [{}])[-1].get("url"),
-                    "url": res.get("url"),
-                    "author": res.get("artists"),
-                    "album": (res.get("album") or {}).get("name"),
-                    "views": res.get("views"),
-                }
-            )
+        results.append(
+            {
+                "title": res.get("title"),
+                "videoId": res.get("videoId"),
+                "duration": res.get("duration"),
+                "thumbnails": (res.get("thumbnails") or [{}])[-1].get("url"),
+                "url": res.get("url"),
+                "author": res.get("artists"),
+                "album": (res.get("album") or {}).get("name"),
+                "views": res.get("views"),
+            }
+        )
 
     return results
 
