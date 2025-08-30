@@ -18,7 +18,15 @@
             <!-- Player Section (always visible) -->
             <section class="player-section" id="playerSection" style="display: block;">
                 <div class="player-header">
-                    <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
+                    <div class="player-title">
+                        <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
+                        <div id="songDetails" class="song-details"></div>
+                        <form class="refine-search" id="refineSearchForm">
+                            <input type="text" id="refineArtistInput" placeholder="Artist" />
+                            <input type="text" id="refineTitleInput" placeholder="Song title" />
+                            <button class="control-btn" id="refineSearchBtn">Search & Replace</button>
+                        </form>
+                    </div>
                     <div class="player-controls" id="playerControls" style="display: none;">
                         <button id="playPauseBtn" class="control-btn">
                             <i class="fas fa-play"></i> Play
@@ -42,9 +50,9 @@
 
                 <div class="player-body">
                     <div class="left-pane">
-                        <div class="tracks-container" id="stemsContainer">
-                            <!-- Stems will be dynamically added here -->
-                        </div>
+                    </div>
+                    <div class="tracks-container" id="stemsContainer">
+                        <!-- Stems will be dynamically added here -->
                     </div>
                     <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
                         <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics

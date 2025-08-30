@@ -83,6 +83,9 @@ class InstantKaraokeApp {
         // Tabs and YouTube UI
         this.setupTabs();
         this.setupYouTubeSearch();
+        this.setupRefineSearch();
+        // Refine search is lyrics-only and disabled until a song is chosen
+        this.setRefineSearchEnabled(false);
     }
 
     initializeLyrics() {
@@ -185,6 +188,12 @@ class InstantKaraokeApp {
             const result = await response.json();
             this.currentSession = result;
             this.activeSessionId = result.session_id;
+            // Track latest metadata for lyrics refine defaults
+            try {
+                const baseName = (file.name || '').replace(/\.[^/.]+$/, '');
+                this._latestTitle = baseName || (file.name || '');
+                this._latestArtist = '';
+            } catch (_) { this._latestTitle = file.name || ''; this._latestArtist = ''; }
             
             // Hide upload progress and show processing
             this.hideUploadProgress();
@@ -537,6 +546,15 @@ class InstantKaraokeApp {
             value.textContent = `${(this.lyrics.offset || 0).toFixed(1)}s`;
             this._lyricsOffsetBound = true;
         }
+        // Prefill refine search inputs with latest metadata
+        const artistInput = document.getElementById('refineArtistInput');
+        const titleInput = document.getElementById('refineTitleInput');
+        if (artistInput && titleInput) {
+            if (typeof this._latestArtist === 'string') artistInput.value = this._latestArtist;
+            if (typeof this._latestTitle === 'string') titleInput.value = this._latestTitle;
+        }
+        // Enable refine search once a song is chosen
+        this.setRefineSearchEnabled(true);
     }
 
     createStemElement(stemName, stemData) {
@@ -816,6 +834,18 @@ class InstantKaraokeApp {
         return `${m}:${s}`;
     }
 
+    updateSongDetails(meta) {
+        const el = document.getElementById('songDetails');
+        if (!el) return;
+        const title = (meta && meta.title ? String(meta.title) : '').trim();
+        const artist = (meta && meta.artist ? String(meta.artist) : '').trim();
+        if (!title && !artist) {
+            el.textContent = '';
+            return;
+        }
+        el.textContent = artist ? `${artist} — ${title}` : title;
+    }
+
     onSeekInput(e) {
         if (this.transport.duration <= 0) return;
         const ratio = e.target.value / 100;
@@ -936,6 +966,8 @@ class InstantKaraokeApp {
         document.getElementById('uploadSection').style.display = 'block';
         document.getElementById('fileInput').value = '';
         document.getElementById('seekSlider').disabled = true;
+        this.updateSongDetails({ title: '', artist: '' });
+        this.setRefineSearchEnabled(false);
     }
 
     showError(message) {
@@ -1113,6 +1145,9 @@ class InstantKaraokeApp {
             }
             this.currentSession = data;
             this.activeSessionId = data.session_id;
+            // Persist latest metadata for refine form
+            this._latestTitle = (metadata && metadata.title) || '';
+            this._latestArtist = (metadata && metadata.artist) || '';
             // Begin simulated processing progress and player setup
             this.simulateProcessingProgress();
             this.createStemsPlayer();
@@ -1126,9 +1161,11 @@ class InstantKaraokeApp {
                     title: metadata.title || '',
                     artist: metadata.artist || ''
                 });
+                this.updateSongDetails({ title: metadata.title || '', artist: metadata.artist || '' });
             } else {
                 // Clear lyrics if none
                 this.parseAndSetLyrics('');
+                this.updateSongDetails({ title: '', artist: '' });
             }
         } catch (e) {
             this.showError(e.message);
@@ -1338,6 +1375,44 @@ class InstantKaraokeApp {
             .replaceAll('>', '&gt;')
             .replaceAll('"', '&quot;')
             .replaceAll("'", '&#039;');
+    }
+
+    setupRefineSearch() {
+        const form = document.getElementById('refineSearchForm');
+        const btn = document.getElementById('refineSearchBtn');
+        const artistInput = document.getElementById('refineArtistInput');
+        const titleInput = document.getElementById('refineTitleInput');
+        if (!form || !btn || !artistInput || !titleInput) return;
+        const handler = async (e) => {
+            if (e) e.preventDefault();
+            // Ignore if disabled
+            if (btn.disabled || artistInput.disabled || titleInput.disabled) return;
+            const artist = (artistInput.value || '').trim();
+            const title = (titleInput.value || '').trim();
+            if (!artist && !title) return;
+            // Lyrics-only search; do not touch current audio session
+            try {
+                await this.loadLyricsForCurrentTrack({ title, artist });
+            } catch (err) {
+                this.showError(err.message || 'Lyrics search failed');
+            }
+        };
+        form.addEventListener('submit', handler);
+        btn.addEventListener('click', handler);
+    }
+
+    setRefineSearchEnabled(enabled) {
+        const form = document.getElementById('refineSearchForm');
+        const btn = document.getElementById('refineSearchBtn');
+        const artistInput = document.getElementById('refineArtistInput');
+        const titleInput = document.getElementById('refineTitleInput');
+        const set = (el, on) => { if (el) el.disabled = !on; };
+        set(btn, enabled);
+        set(artistInput, enabled);
+        set(titleInput, enabled);
+        if (form) {
+            if (enabled) form.classList.remove('disabled'); else form.classList.add('disabled');
+        }
     }
 }
 

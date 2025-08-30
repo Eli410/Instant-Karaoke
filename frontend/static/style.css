@@ -295,13 +295,11 @@ header p {
 /* Player body layout */
 .player-body {
     display: grid;
-    grid-template-columns: 1fr 1fr; /* lyrics take half of the player area */
+    grid-template-columns: 1fr; /* single column: lyrics pane spans full width */
     gap: 20px;
 }
 
-.left-pane {
-    min-width: 0;
-}
+.left-pane { display: none; }
 
 .lyrics-pane {
     background: #f9fafc;
@@ -361,9 +359,36 @@ header p {
     border-bottom: 2px solid #f0f0f0;
 }
 
+.player-title {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .player-header h3 {
     font-size: 1.8rem;
     color: #333;
+}
+
+.song-details {
+    font-size: 0.95rem;
+    color: #666;
+}
+
+.refine-search {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.refine-search input[type="text"] {
+    padding: 8px 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+}
+
+.refine-search.disabled {
+    opacity: 0.6;
 }
 
 .player-controls {
@@ -448,16 +473,25 @@ header p {
 
 /* Tracks */
 .tracks-container {
-    display: grid;
-    gap: 10px;
+    display: flex; /* horizontal layout */
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 10px 12px; /* space above lyrics */
+    border: 1px solid #e9ecef;
+    border-radius: 10px;
+    background: #fff;
+    align-items: center;
 }
 
 .track {
-    background: white;
-    border-radius: 8px;
-    padding: 10px;
-    border: 1px solid #e9ecef;
-    transition: all 0.3s ease;
+    background: transparent;
+    border-radius: 6px;
+    padding: 6px 4px;
+    border: none;
+    transition: all 0.2s ease;
+    display: flex; /* inline header + slider */
+    align-items: center;
+    gap: 10px;
 }
 
 .track.hidden-simple { display: none; }
@@ -468,31 +502,34 @@ header p {
 
 .track-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
+    justify-content: flex-start;
+    gap: 8px;
+    margin: 0;
 }
 
 .track-name {
-    font-weight: bold;
+    font-weight: 600;
     color: #333;
     text-transform: capitalize;
+    font-size: 0.9rem; /* smaller label */
+    min-width: 90px;
 }
 
 .track-toggle {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .toggle-switch {
     position: relative;
-    width: 50px;
-    height: 24px;
+    width: 36px; /* smaller */
+    height: 18px; /* smaller */
     background: #ccc;
-    border-radius: 12px;
+    border-radius: 9px;
     cursor: pointer;
-    transition: background 0.3s ease;
+    transition: background 0.2s ease;
 }
 
 .toggle-switch.active {
@@ -504,27 +541,27 @@ header p {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 20px;
-    height: 20px;
+    width: 14px; /* smaller knob */
+    height: 14px;
     background: white;
     border-radius: 50%;
-    transition: transform 0.3s ease;
+    transition: transform 0.2s ease;
 }
 
 .toggle-switch.active::after {
-    transform: translateX(26px);
+    transform: translateX(18px);
 }
 
 .track-volume {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 10px;
+    gap: 8px;
+    margin-top: 0; /* inline with header */
 }
 
 .volume-slider {
-    flex: 0 0 140px;
-    height: 4px;
+    flex: 0 0 110px; /* smaller slider */
+    height: 3px;
     background: #e0e0e0;
     border-radius: 2px;
     outline: none;
@@ -533,16 +570,16 @@ header p {
 
 .volume-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
+    width: 12px;
+    height: 12px;
     background: #667eea;
     border-radius: 50%;
     cursor: pointer;
 }
 
 .volume-slider::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
+    width: 12px;
+    height: 12px;
     background: #667eea;
     border-radius: 50%;
     cursor: pointer;
@@ -550,9 +587,9 @@ header p {
 }
 
 .volume-label {
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     color: #666;
-    min-width: 40px;
+    min-width: 34px;
 }
 
 /* Time seek slider width */
