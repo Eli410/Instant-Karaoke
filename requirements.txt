@@ -10,3 +10,4 @@ werkzeug
 dora-search
 syncedlyrics
 ytmusicapi
+imageio-ffmpeg

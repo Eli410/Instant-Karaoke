@@ -59,11 +59,11 @@ def process(
         Dictionary mapping stem names to their separated audio arrays as int16.
     """
     device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-
     audio_tensor = torch.from_numpy(audio_array.copy()).view(-1, 2)
     audio_tensor = audio_tensor.float()
     waveform = audio_tensor.t()
     waveform /= 32768.0
+    waveform *= 0.85  # Reduce volume to prevent clipping
 
     waveform = waveform.unsqueeze(0).to(device)
     model = model.to(device)

@@ -11,7 +11,7 @@
     <div class="container">
         <header>
             <h1><i class="fas fa-music"></i> Instant Karaoke</h1>
-            <p>Upload audio and separate into individual tracks</p>
+            <p>AI-powered karaoke with stem separation, synchronized lyrics, and individual track control</p>
         </header>
 
         <main>
@@ -54,54 +54,49 @@
             </section>
             
             <!-- Player Section (moved below tabs and sections) -->
-            <section class="player-section" id="playerSection" style="display: block;">
+            <section class="player-section" id="playerSection" style="display: block; position: relative;">
                 <div class="player-header">
                     <div class="player-title">
                         <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
-                        <div id="songDetails" class="song-details"></div>
                         <form class="refine-search" id="refineSearchForm">
                             <input type="text" id="refineArtistInput" placeholder="Artist" />
                             <input type="text" id="refineTitleInput" placeholder="Song title" />
-                            <button class="control-btn" id="refineSearchBtn">Search & Replace</button>
+                            <button class="control-btn" id="refineSearchBtn">Search & Replace Lyrics</button>
+                            <div class="player-controls" id="playerControls" style="display: none; margin-left:auto;">
+                                <div class="transport-controls">
+                                    <div class="transport-buttons">
+                                        <button id="playPauseBtn" class="control-btn" type="button">Play</button>
+                                        <button id="stopAllBtn" class="control-btn" type="button">Stop</button>
+                                    </div>
+                                    <div class="transport-progress">
+                                        <span id="currentTimeLabel">0:00</span>
+                                        <input id="seekSlider" type="range" min="0" max="100" value="0">
+                                        <span id="totalTimeLabel">0:00</span>
+                                    </div>
+                                </div>
+                                <div class="track-toggle" id="advancedToggle" title="Show/hide advanced stem controls">
+                                    <div class="toggle-switch" id="advancedToggleSwitch"></div>
+                                    <span id="advancedToggleLabel">Advanced</span>
+                                </div>
+                            </div>
                         </form>
                     </div>
                     
-                    <!-- Processing moved into player -->
-                    <div class="processing-section" id="processingSection" style="display: none;">
-                        <div class="processing-content">
-                            <i class="fas fa-cogs fa-spin"></i>
-                            <h3>Processing Audio</h3>
-                            <p id="processingText">Separating tracks...</p>
-                            <div class="processing-progress">
-                                <div class="progress-bar">
-                                    <div class="progress-fill" id="processingProgressFill"></div>
-                                </div>
-                                <p id="processingProgressText">0%</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="player-controls" id="playerControls" style="display: none;">
-                        <button id="playPauseBtn" class="control-btn">
-                            <i class="fas fa-play"></i> Play
-                        </button>
-                        <button id="stopAllBtn" class="control-btn">
-                            <i class="fas fa-stop"></i> Stop
-                        </button>
-                        <div style="display:flex;align-items:center;gap:10px;min-width:240px;">
-                            <span id="currentTimeLabel">0:00</span>
-                            <input id="seekSlider" type="range" min="0" max="100" value="0" style="flex:1;">
-                            <span id="totalTimeLabel">0:00</span>
-                        </div>
-                        <div class="track-toggle" id="advancedToggle" title="Show/hide advanced stem controls">
-                            <div class="toggle-switch" id="advancedToggleSwitch"></div>
-                            <span id="advancedToggleLabel">Advanced</span>
-                        </div>
+                </div>
+
+                <!-- Full player overlay processing -->
+                <div class="processing-overlay" id="processingSection" style="display: none;">
+                    <div class="processing-content">
+                        <i class="fas fa-cogs fa-spin"></i>
+                        <h3>Processing Audio</h3>
+                        <p id="processingText">Separating tracks...</p>
                     </div>
                 </div>
 
                 <div id="playerEmptyState" class="player-empty">Choose a song to begin</div>
 
                 <div class="player-body">
+                    <div id="songDetails" class="song-details"></div>
                     <div class="tracks-container" id="stemsContainer">
                         <!-- Stems will be dynamically added here -->
                     </div>

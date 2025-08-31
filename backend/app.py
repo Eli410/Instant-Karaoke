@@ -8,6 +8,7 @@ import uuid
 from werkzeug.utils import secure_filename
 import soundfile as sf
 from pydub import AudioSegment
+import imageio_ffmpeg as iio_ffmpeg
 from .audio_separation import load_model, process
 import threading
 import time
@@ -32,6 +33,11 @@ model = None
 model_lock = threading.Lock()
 SESSIONS = {}
 
+# =============================================================================
+# CONFIGURATION: Adjust these values for testing and performance tuning
+# =============================================================================
+CHUNK_DURATION = 7.0  # Duration in seconds for each audio chunk (adjustable for testing)
+
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'flac', 'm4a', 'ogg'}
 
 TEMP_BASE_DIR = tempfile.mkdtemp(prefix='instant_karaoke_')
@@ -40,6 +46,11 @@ PROCESSED_FOLDER = os.path.join(TEMP_BASE_DIR, 'processed')
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+
+
+FFMPEG_EXE = iio_ffmpeg.get_ffmpeg_exe()
+# Configure pydub to use imageio-ffmpeg's bundled ffmpeg binary
+AudioSegment.converter = FFMPEG_EXE
 
 
 def cleanup_temp_files():
@@ -115,7 +126,7 @@ def load_model_safe():
         return model
 
 
-def split_audio_into_chunks(audio_data, sample_rate, chunk_duration=5.0):
+def split_audio_into_chunks(audio_data, sample_rate, chunk_duration=CHUNK_DURATION):
     chunk_samples = int(sample_rate * chunk_duration)
     chunks = []
     for i in range(0, len(audio_data), chunk_samples):
@@ -199,7 +210,7 @@ def upload_audio():
         SESSIONS[session_id] = {
             'folder': session_folder,
             'sample_rate': sample_rate,
-            'chunk_duration': 5.0,
+            'chunk_duration': CHUNK_DURATION,
             'total_chunks': len(chunks),
             'ready': {},
             'stems': set(),
@@ -242,7 +253,7 @@ def upload_audio():
             'session_id': session_id,
             'total_chunks': len(chunks),
             'sample_rate': sample_rate,
-            'chunk_duration': 5.0
+            'chunk_duration': CHUNK_DURATION
         })
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
@@ -315,7 +326,7 @@ def yt_search_endpoint():
             except Exception:
                 pass
         songs_top10 = _dedupe(songs)[:10]
-        videos_top10 = _dedupe(videos)[:10]
+        videos_top10 = _dedupe(videos)[:5]
         def _views_to_int(v):
             try:
                 if v is None:
@@ -360,7 +371,7 @@ def lyrics_endpoint():
 
 def _read_remote_chunk_wav(stream_url: str, start_s: float, duration_s: float, target_sr: int = 44100):
     cmd = [
-        'ffmpeg',
+        FFMPEG_EXE,
         '-ss', str(max(0.0, float(start_s))),
         '-t', str(float(duration_s)),
         '-i', stream_url,
@@ -400,7 +411,7 @@ def yt_start_session(video_id):
         session_id = str(uuid.uuid4())
         session_folder = os.path.join(PROCESSED_FOLDER, session_id)
         os.makedirs(session_folder, exist_ok=True)
-        chunk_duration = 5.0
+        chunk_duration = CHUNK_DURATION
         target_sr = 44100
         SESSIONS[session_id] = {
             'folder': session_folder,

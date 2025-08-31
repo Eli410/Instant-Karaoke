@@ -94,6 +94,9 @@ class InstantKaraokeApp {
             activeIndex: -1,
             loading: false,
             offset: 0.0,
+            currentBlockStart: 0,
+            _lastRenderedBlockStart: -1,
+            _countdown: { active: false, targetTime: 0, side: 'right' },
         };
         this.lyricsContainer = document.getElementById('lyricsContainer');
     }
@@ -209,9 +212,6 @@ class InstantKaraokeApp {
             this.showProcessingProgress();
             this.scrollPlayerIntoView();
             
-            // Simulate processing progress (since backend doesn't provide real-time updates)
-            this.simulateProcessingProgress();
-            
             // Create player UI immediately and start polling for chunks
             this.createStemsPlayer();
             this.scheduler.chunkDuration = this.currentSession.chunk_duration || 5.0;
@@ -256,7 +256,8 @@ class InstantKaraokeApp {
     }
 
     showProcessingProgress() {
-        document.getElementById('processingSection').style.display = 'block';
+        const el = document.getElementById('processingSection');
+        if (el) el.style.display = 'flex';
     }
 
     hideProcessingProgress() {
@@ -274,31 +275,7 @@ class InstantKaraokeApp {
         } catch (_) {}
     }
 
-    simulateProcessingProgress() {
-        const progressFill = document.getElementById('processingProgressFill');
-        const progressText = document.getElementById('processingProgressText');
-        const processingText = document.getElementById('processingText');
-        
-        let progress = 0;
-        const steps = ['Loading model...', 'Separating tracks...', 'Processing chunks...', 'Finalizing...'];
-        let stepIndex = 0;
-        
-        const interval = setInterval(() => {
-            progress += Math.random() * 8;
-            if (progress >= 100) {
-                progress = 100;
-                clearInterval(interval);
-            }
-            
-            progressFill.style.width = progress + '%';
-            progressText.textContent = `${Math.round(progress)}%`;
-            
-            if (progress > stepIndex * 25 && stepIndex < steps.length - 1) {
-                stepIndex++;
-                processingText.textContent = steps[stepIndex];
-            }
-        }, 300);
-    }
+
 
     async loadStems() {
         const { session_id, stems } = this.currentSession;
@@ -343,7 +320,9 @@ class InstantKaraokeApp {
                 if (status.error) return;
                 // If session changed, stop this poller silently
                 if (this.activeSessionId !== pollToken) return;
-                // For each ready chunk per stem, if first chunk just arrived, begin playback using that chunk
+                // First pass: calculate minimum ready chunks and ensure UI exists
+                let minReadyChunks = status.stems.length > 0 ? Number.MAX_SAFE_INTEGER : 0;
+                
                 for (const stemName of status.stems) {
                     const ready = status.ready[stemName] || [];
                     // Ensure stem UI exists
@@ -354,10 +333,21 @@ class InstantKaraokeApp {
                         // Enforce current advanced/simple visibility on newly created track
                         this.applyAdvancedVisibility(false);
                     }
-                    // Schedule new ready chunks in order for each stem (only if playing or should auto-start)
+                    
+                    // Track minimum chunks available across all stems
+                    minReadyChunks = Math.min(minReadyChunks, ready.length);
+                }
+                
+                // Second pass: schedule chunks now that we know if we should auto-start
+                const shouldAutoStart = this.scheduler.shouldAutoStart && minReadyChunks >= 1;
+                
+                for (const stemName of status.stems) {
+                    const ready = status.ready[stemName] || [];
                     const state = this.scheduler.perStem[stemName] || { nextIndex: 0, scheduled: new Set() };
                     this.scheduler.perStem[stemName] = state;
-                    while (ready.includes(state.nextIndex) && (this.transport.isPlaying || this.scheduler.shouldAutoStart)) {
+                    
+                    // Schedule chunks if we're playing, or if we should auto-start with enough buffer
+                    while (ready.includes(state.nextIndex) && (this.transport.isPlaying || shouldAutoStart)) {
                         // Only schedule if not already scheduled
                         if (!state.scheduled.has(state.nextIndex)) {
                             await this.scheduleChunk(sessionId, stemName, state.nextIndex);
@@ -366,6 +356,13 @@ class InstantKaraokeApp {
                         state.nextIndex += 1;
                     }
                 }
+                
+                // Log auto-start with buffer info
+                if (shouldAutoStart && !this.transport.isPlaying) {
+                    console.log(`Auto-starting playback with ${minReadyChunks} chunks buffered for each stem`);
+                }
+                
+
                 this.scheduler.done = status.done;
                 if (status.done) {
                     // Enable seeking once continuous stems are available
@@ -377,6 +374,7 @@ class InstantKaraokeApp {
                             this.loadContinuousStem(sessionId, stemName).catch(() => {});
                         }
                     }
+
                 }
                 if (!status.done && this.activeSessionId === pollToken) {
                     setTimeout(poll, 1000);
@@ -387,6 +385,7 @@ class InstantKaraokeApp {
         };
         poll();
     }
+
 
     async loadContinuousStem(sessionId, stemName) {
         const url = `/api/audio/${sessionId}/${stemName}.wav`;
@@ -436,6 +435,8 @@ class InstantKaraokeApp {
             this.transport.isPlaying = true;
             this.transport.startTime = now;
             this.transport.pausedAt = 0;
+            // Hide processing overlay on first audio start
+            this.hideProcessingProgress();
             this.updatePlayPauseUI();
             this.startTransportTicker();
             this.scheduler.startTime = now;
@@ -533,7 +534,6 @@ class InstantKaraokeApp {
     }
 
     createStemsPlayer() {
-        this.hideProcessingProgress();
         document.getElementById('playerSection').style.display = 'block';
 
         // Hide controls/lyrics until playback actually starts
@@ -756,6 +756,8 @@ class InstantKaraokeApp {
         this.transport.startTime = now;
         this.transport.isPlaying = true;
         this.transport.pausedAt = 0;
+        // Continuous mode start: hide processing overlay if still visible
+        this.hideProcessingProgress();
         this.updatePlayPauseUI();
         this.startTransportTicker();
         this.startContinuousPlayback(0);
@@ -863,6 +865,10 @@ class InstantKaraokeApp {
                 seekSlider.value = Math.min(100, (t / this.transport.duration) * 100);
             }
             this.updateLyricsAtTime(t);
+            // Keep media element in sync with audio clock
+            this.syncMediaProgress();
+            // Ensure karaoke overlay (including countdown timer) updates every frame
+            try { this.updateKaraokeOverlay(this.lyrics.activeIndex); } catch (_) {}
             requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
@@ -930,9 +936,9 @@ class InstantKaraokeApp {
     updatePlayPauseUI() {
         const btn = document.getElementById('playPauseBtn');
         if (this.transport.isPlaying) {
-            btn.innerHTML = '<i class="fas fa-pause"></i> Pause';
+            btn.textContent = 'Pause';
         } else {
-            btn.innerHTML = '<i class="fas fa-play"></i> Play';
+            btn.textContent = 'Play';
         }
     }
 
@@ -1202,8 +1208,7 @@ class InstantKaraokeApp {
             // Persist latest metadata for refine form
             this._latestTitle = (metadata && metadata.title) || '';
             this._latestArtist = (metadata && metadata.artist) || '';
-            // Begin simulated processing progress and player setup
-            this.simulateProcessingProgress();
+            // Begin processing progress and player setup
             this.createStemsPlayer();
             this.scheduler.chunkDuration = this.currentSession.chunk_duration || 5.0;
             this.scheduler.shouldAutoStart = true;
@@ -1255,13 +1260,28 @@ class InstantKaraokeApp {
             if (thumbnail) video.setAttribute('poster', thumbnail);
             video.muted = true; // allow autoplay without user gesture
             video.controls = false; // not standalone controls
+            video.preload = 'auto';
+            // Stabilize playback rate defaults
+            try { video.defaultPlaybackRate = 1.0; } catch (_) {}
+            try { video.playbackRate = 1.0; } catch (_) {}
+            // Avoid pitch correction when rate is tweaked
+            try { video.preservesPitch = false; video.mozPreservesPitch = false; video.webkitPreservesPitch = false; } catch (_) {}
             video.src = videoUrl;
             wrapper.appendChild(video);
+            // Inject karaoke overlay
+            this.ensureKaraokeOverlay(wrapper);
+            // Disable backdrop blur on videos to avoid GPU bugs in some browsers
+            const overlay = wrapper.querySelector('.karaoke-overlay');
+            if (overlay) overlay.classList.add('no-blur');
         } else if (hasImage) {
             const img = document.createElement('img');
             img.alt = 'Cover image';
             img.src = thumbnail;
             wrapper.appendChild(img);
+            // Inject karaoke overlay on image as well
+            this.ensureKaraokeOverlay(wrapper);
+            const overlay = wrapper.querySelector('.karaoke-overlay');
+            if (overlay) overlay.classList.remove('no-blur');
         }
     }
 
@@ -1282,6 +1302,42 @@ class InstantKaraokeApp {
         }
     }
 
+    // Nudge the <video> element to follow the WebAudio transport clock
+    syncMediaProgress() {
+        const video = document.querySelector('#mediaWrapper video');
+        if (!video) return;
+        // Ensure video keeps playing when audio plays
+        if (this.transport.isPlaying && video.paused) {
+            try { const p = video.play(); if (p && typeof p.then === 'function') p.catch(() => {}); } catch (_) {}
+        }
+        const target = Math.max(0, this.getCurrentTime());
+        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        const drift = current - target;
+        // Hard resync if far off
+        const hardThreshold = 0.35;
+        if (Math.abs(drift) > hardThreshold) {
+            try { video.currentTime = target; } catch (_) {}
+            try { video.playbackRate = 1.0; } catch (_) {}
+            return;
+        }
+        // Soft correction with playbackRate
+        const softThreshold = 0.06; // 60 ms
+        let desiredRate = 1.0;
+        if (drift > softThreshold) {
+            // Video is ahead → slow it slightly
+            desiredRate = 0.985;
+        } else if (drift < -softThreshold) {
+            // Video is behind → speed up slightly
+            desiredRate = 1.015;
+        }
+        try {
+            // Only adjust if different to avoid thrashing
+            if (Math.abs((video.playbackRate || 1) - desiredRate) > 0.004) {
+                video.playbackRate = desiredRate;
+            }
+        } catch (_) {}
+    }
+
     async loadLyricsForCurrentTrack(metadata = null) {
         try {
             if (!metadata || !metadata.title || !metadata.artist) return;
@@ -1300,17 +1356,21 @@ class InstantKaraokeApp {
             }
             if (data.lrc) {
                 this.parseAndSetLyrics(data.lrc);
+                // Reset overlay content on new lyrics
+                this.updateKaraokeOverlay(-1);
             } else {
                 this.lyrics.loading = false;
                 this.lyrics.entries = [];
                 this.lyrics.activeIndex = -1;
                 this.renderLyrics(-1);
+                this.updateKaraokeOverlay(-1);
             }
         } catch (e) {
             this.lyrics.loading = false;
             this.lyrics.entries = [];
             this.lyrics.activeIndex = -1;
             this.renderLyrics(-1);
+            this.updateKaraokeOverlay(-1);
         }
     }
 
@@ -1333,14 +1393,62 @@ class InstantKaraokeApp {
                 fracSeconds = parseInt(fracStr, 10) / 10;
             }
             const time = mm * 60 + ss + fracSeconds;
-            const text = match[4] || '';
-            entries.push({ time, text });
+            const rawText = match[4] || '';
+            
+            // Parse word-level lyrics if they exist (enhanced format)
+            let text = rawText;
+            let words = null;
+            
+            // Check if this line contains word-level timestamps: <mm:ss.xx> word <mm:ss.xx> word
+            if (rawText.includes('<') && rawText.includes('>')) {
+                const wordMatches = [];
+                const wordPattern = /<(\d{2}):(\d{2})(?:\.(\d{1,3}))?>([^<]*?)(?=<|$)/g;
+                let wordMatch;
+                
+                while ((wordMatch = wordPattern.exec(rawText)) !== null) {
+                    const wordMm = parseInt(wordMatch[1], 10);
+                    const wordSs = parseInt(wordMatch[2], 10);
+                    const wordFracStr = wordMatch[3] || '';
+                    let wordFracSeconds = 0;
+                    if (wordFracStr.length === 3) {
+                        wordFracSeconds = parseInt(wordFracStr, 10) / 1000;
+                    } else if (wordFracStr.length === 2) {
+                        wordFracSeconds = parseInt(wordFracStr, 10) / 100;
+                    } else if (wordFracStr.length === 1) {
+                        wordFracSeconds = parseInt(wordFracStr, 10) / 10;
+                    }
+                    const wordTime = wordMm * 60 + wordSs + wordFracSeconds;
+                    const wordText = (wordMatch[4] || '').trim();
+                    
+                    if (wordText) {
+                        wordMatches.push({ time: wordTime, text: wordText });
+                    }
+                }
+                
+                if (wordMatches.length > 0) {
+                    words = wordMatches;
+                    // Extract clean text without timestamps for display
+                    text = wordMatches.map(w => w.text).join(' ').trim();
+                }
+            }
+            
+            entries.push({ 
+                time, 
+                text,
+                words: words, // Store word-level data for potential future use
+                rawText: rawText // Keep original for debugging if needed
+            });
         }
         entries.sort((a, b) => a.time - b.time);
         this.lyrics.entries = entries;
         this.lyrics.activeIndex = -1;
         this.lyrics.loading = false;
+        this.lyrics.currentBlockStart = 0;
+        this.lyrics._lastRenderedBlockStart = -1;
+        this.lyrics._countdown.active = false; // Reset countdown state for new lyrics
         this.renderLyrics(-1);
+        // Show first two lines immediately in overlay to indicate readiness
+        this.updateKaraokeOverlay(-1);
     }
 
     updateLyricsAtTime(currentSeconds) {
@@ -1357,47 +1465,414 @@ class InstantKaraokeApp {
                 high = mid - 1;
             }
         }
+        
         if (best !== this.lyrics.activeIndex) {
             this.lyrics.activeIndex = best;
             this.renderLyrics(best);
+            this.updateKaraokeOverlay(best);
         }
+        
+        // Note: Word highlighting removed for plain text lyrics display
     }
+
+
 
     renderLyrics(activeIndex) {
         const container = this.lyricsContainer;
         if (!container) return;
         container.innerHTML = '';
         const entries = this.lyrics.entries;
+        
         if (this.lyrics.loading) {
             const p = document.createElement('p');
             p.textContent = 'Loading lyrics...';
             container.appendChild(p);
             return;
         }
+        
         if (!entries || entries.length === 0) {
             const p = document.createElement('p');
             p.textContent = 'No lyrics found.';
             container.appendChild(p);
             return;
         }
-        // Show at most 1 previous, current, and 2 next lines
-        const start = Math.max(0, (activeIndex < 0 ? 0 : activeIndex) - 1);
-        const end = Math.min(entries.length - 1, (activeIndex < 0 ? 0 : activeIndex) + 2);
-        for (let i = start; i <= end; i++) {
-            const div = document.createElement('div');
-            div.className = 'lyrics-line';
-            div.textContent = entries[i].text || '';
-            if (i < activeIndex) div.classList.add('prev');
-            if (i === activeIndex) div.classList.add('current');
-            if (i > activeIndex) div.classList.add('next');
-            container.appendChild(div);
+        
+        // Display all lyrics as plain text
+        const lyricsDiv = document.createElement('div');
+        lyricsDiv.className = 'plain-lyrics';
+        
+        // Extract and display only displayable lyrics (skip instrumental sections)
+        const displayableEntries = entries.filter(entry => 
+            entry && entry.text && this.isDisplayableLyricText(entry.text)
+        );
+        
+        if (displayableEntries.length === 0) {
+            const p = document.createElement('p');
+            p.textContent = 'No lyrics available.';
+            container.appendChild(p);
+            return;
         }
-        // Center current line when possible
-        const currentEl = container.querySelector('.lyrics-line.current');
-        if (currentEl) {
-            const targetTop = Math.max(0, currentEl.offsetTop - (container.clientHeight - currentEl.clientHeight) / 2);
-            container.scrollTop = targetTop;
+        
+        // Create plain text display
+        displayableEntries.forEach((entry, index) => {
+            const line = document.createElement('p');
+            line.className = 'plain-lyric-line';
+            line.textContent = entry.text;
+            lyricsDiv.appendChild(line);
+        });
+        
+        container.appendChild(lyricsDiv);
+    }
+
+
+    
+    getCountdownInfo(activeIndex, currentTime, entries) {
+        const findNext = (from) => this.findNextDisplayableIndex(from);
+        
+        // At start of song (no active lyric yet)
+        if (activeIndex < 0) {
+            const firstIdx = findNext(-1);
+            if (firstIdx >= 0) {
+                const firstLyricTime = entries[firstIdx].time;
+                const timeToFirst = firstLyricTime - currentTime;
+                
+                // Show timer if more than 10 seconds until first lyric
+                if (timeToFirst > 10) {
+                    return { showTimer: true, secondsRemaining: timeToFirst };
+                }
+            }
+            return { showTimer: false };
         }
+        
+        // Find current displayable lyric
+        const currentIdx = this.findPrevDisplayableIndex(activeIndex);
+        if (currentIdx >= 0) {
+            const nextIdx = findNext(currentIdx);
+            if (nextIdx >= 0) {
+                const nextLyricTime = entries[nextIdx].time;
+                const timeToNext = nextLyricTime - currentTime;
+                
+                // Show timer if more than 10 seconds until next lyric
+                if (timeToNext > 10) {
+                    return { showTimer: true, secondsRemaining: timeToNext };
+                }
+            }
+        }
+        
+        return { showTimer: false };
+    }
+    
+    formatCountdown(seconds) {
+        if (seconds < 60) {
+            return `${Math.max(0, Math.floor(seconds))}s`;
+        } else {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.max(0, Math.floor(seconds % 60));
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+    }
+
+    ensureKaraokeOverlay(wrapperEl) {
+        if (!wrapperEl.querySelector('.karaoke-overlay')) {
+            const overlay = document.createElement('div');
+            overlay.className = 'karaoke-overlay';
+            
+            const timer = document.createElement('div');
+            timer.className = 'karaoke-timer';
+            timer.style.display = 'none';
+            
+            const left = document.createElement('div');
+            left.className = 'karaoke-line karaoke-line-left';
+            const right = document.createElement('div');
+            right.className = 'karaoke-line karaoke-line-right';
+            
+            overlay.appendChild(timer);
+            overlay.appendChild(left);
+            overlay.appendChild(right);
+            wrapperEl.appendChild(overlay);
+        }
+    }
+
+    updateKaraokeOverlay(activeIndex) {
+        try {
+            const wrapper = document.getElementById('mediaWrapper');
+            if (!wrapper) return;
+            let overlay = wrapper.querySelector('.karaoke-overlay');
+            if (!overlay) {
+                // Ensure overlay exists even if media was not yet interacted with
+                this.ensureKaraokeOverlay(wrapper);
+                overlay = wrapper.querySelector('.karaoke-overlay');
+            }
+            const timer = overlay.querySelector('.karaoke-timer');
+            const left = overlay.querySelector('.karaoke-line-left');
+            const right = overlay.querySelector('.karaoke-line-right');
+            if (!left || !right || !timer) return;
+            const entries = this.lyrics?.entries || [];
+            
+            if (!entries.length) {
+                timer.style.display = 'none';
+                left.textContent = '';
+                right.textContent = '';
+                left.classList.remove('current', 'next');
+                right.classList.remove('current', 'next');
+                return;
+            }
+            
+            // Countdown timer logic: keep showing once started until reaching 0
+            const currentTime = this.getCurrentTime();
+            const adjustedTime = currentTime + (this.lyrics.offset || 0);
+
+            // Determine upcoming lyric side and time
+            const _findNext = (from) => this.findNextDisplayableIndex(from);
+            const _findPrev = (from) => this.findPrevDisplayableIndex(from);
+            const _countUpTo = (idx) => this.countDisplayablesUpTo(idx);
+            let upcomingOnRight = true;
+            let nextLyricTime = null;
+            if (activeIndex >= 0) {
+                const currentIdx = _findPrev(activeIndex);
+                if (currentIdx >= 0) {
+                    const seqIndex = _countUpTo(currentIdx) - 1;
+                    upcomingOnRight = (seqIndex % 2) === 0;
+                    const nextIdx = _findNext(currentIdx);
+                    if (nextIdx >= 0) nextLyricTime = entries[nextIdx].time;
+                } else {
+                    // before first displayable
+                    upcomingOnRight = false;
+                    const firstIdx = _findNext(-1);
+                    if (firstIdx >= 0) nextLyricTime = entries[firstIdx].time;
+                }
+            } else {
+                // no active yet
+                upcomingOnRight = false;
+                const firstIdx = _findNext(-1);
+                if (firstIdx >= 0) nextLyricTime = entries[firstIdx].time;
+            }
+
+            // Start countdown when gap > 10s
+            if (!this.lyrics._countdown.active && typeof nextLyricTime === 'number') {
+                const gap = nextLyricTime - adjustedTime;
+                if (gap > 10) {
+                    this.lyrics._countdown.active = true;
+                    this.lyrics._countdown.targetTime = nextLyricTime;
+                    this.lyrics._countdown.side = upcomingOnRight ? 'right' : 'left';
+                }
+            }
+
+            // Handle countdown timer (but don't interfere with lyrics rendering)
+            if (this.lyrics._countdown.active) {
+                const secondsRemaining = Math.max(0, this.lyrics._countdown.targetTime - adjustedTime);
+                if (secondsRemaining <= 0.01) { // Hide when lyric actually starts
+                    this.lyrics._countdown.active = false;
+                    timer.style.display = 'none';
+                } else if (secondsRemaining <= 5) { // Only show timer when 5 seconds or less
+                    timer.style.display = 'block';
+                    // Show actual countdown including 0s
+                    const displayTime = Math.max(0, Math.ceil(secondsRemaining - 1));
+                    timer.textContent = this.formatCountdown(displayTime);
+                    // Position will be set after lyrics are rendered
+                } else {
+                    timer.style.display = 'none'; // Hide timer when more than 5 seconds
+                }
+            } else {
+                timer.style.display = 'none';
+            }
+            // Sliding window of two over displayable lines, positions alternate left/right
+            left.classList.remove('current', 'next');
+            right.classList.remove('current', 'next');
+            const _findNext2 = (from) => this.findNextDisplayableIndex(from);
+            const _findPrev2 = (from) => this.findPrevDisplayableIndex(from);
+            const _countUpTo2 = (idx) => this.countDisplayablesUpTo(idx);
+            if (activeIndex >= 0) {
+                const currentIdx = _findPrev2(activeIndex);
+                if (currentIdx >= 0) {
+                    const nextIdx = _findNext2(currentIdx);
+                    const seqIndex = _countUpTo2(currentIdx) - 1; // zero-based sequence index among displayables
+                    const currentEntry = entries[currentIdx];
+                    const previewEntry = nextIdx >= 0 ? entries[nextIdx] : null;
+                    if ((seqIndex % 2) === 0) {
+                        // Even sequence -> left current, right preview
+                        this.renderKaraokeOverlayLine(left, currentEntry, 'current');
+                        this.renderKaraokeOverlayLine(right, previewEntry, 'next');
+                    } else {
+                        // Odd sequence -> right current, left preview
+                        this.renderKaraokeOverlayLine(right, currentEntry, 'current');
+                        this.renderKaraokeOverlayLine(left, previewEntry, 'next');
+                    }
+                } else {
+                    // No displayable yet, show first two as readiness preview
+                    const firstIdx = _findNext2(-1);
+                    const secondIdx = _findNext2(firstIdx);
+                    const firstEntry = firstIdx >= 0 ? entries[firstIdx] : null;
+                    const secondEntry = secondIdx >= 0 ? entries[secondIdx] : null;
+                    this.renderKaraokeOverlayLine(left, firstEntry, 'next');
+                    this.renderKaraokeOverlayLine(right, secondEntry, 'next');
+                }
+            } else {
+                // Before first timestamp: show first two displayables as readiness preview
+                const firstIdx = _findNext2(-1);
+                const secondIdx = _findNext2(firstIdx);
+                const firstEntry = firstIdx >= 0 ? entries[firstIdx] : null;
+                const secondEntry = secondIdx >= 0 ? entries[secondIdx] : null;
+                this.renderKaraokeOverlayLine(left, firstEntry, 'next');
+                this.renderKaraokeOverlayLine(right, secondEntry, 'next');
+            }
+            
+            // Update smooth word highlighting for karaoke overlay
+            this.updateKaraokeWordHighlighting(adjustedTime);
+            
+            // Position countdown timer after lyrics are rendered
+            if (this.lyrics._countdown.active && timer.style.display === 'block') {
+                // Use a timeout to ensure DOM is updated
+                setTimeout(() => {
+                    try {
+                        const targetEl = (this.lyrics._countdown.side === 'right') ? right : left;
+                        if (targetEl.textContent) {
+                            const overlayRect = overlay.getBoundingClientRect();
+                            const targetRect = targetEl.getBoundingClientRect();
+                            
+                            // Position timer above right lyrics, below left lyrics
+                            const timerY = this.lyrics._countdown.side === 'right' 
+                                ? targetRect.top - overlayRect.top - 35  // 35px above for right side
+                                : targetRect.bottom - overlayRect.top + 10; // 10px below for left side
+                            
+                            // Center horizontally with the lyric line
+                            const centerX = targetRect.left - overlayRect.left + (targetRect.width / 2);
+                            timer.style.left = `${centerX}px`;
+                            timer.style.top = `${timerY}px`;
+                            timer.style.transform = 'translateX(-50%)'; // Center the timer text
+                        }
+                    } catch (_) {}
+                }, 0);
+            }
+        } catch (_) { /* non-fatal UI update error */ }
+    }
+
+    renderKaraokeOverlayLine(lineElement, entry, state) {
+        if (!entry || !entry.text) {
+            lineElement.textContent = '';
+            lineElement.classList.remove('current', 'next');
+            return;
+        }
+
+        // Clear previous content and classes
+        lineElement.innerHTML = '';
+        lineElement.classList.remove('current', 'next', 'no-words');
+        lineElement.classList.add(state);
+
+        // If we have word-level timing data, render individual words as spans
+        if (entry.words && entry.words.length > 0) {
+            entry.words.forEach((word, index) => {
+                const wordSpan = document.createElement('span');
+                wordSpan.className = 'karaoke-word';
+                wordSpan.dataset.wordTime = word.time;
+                wordSpan.dataset.entryIndex = this.lyrics.entries.indexOf(entry);
+                wordSpan.dataset.wordIndex = index;
+                
+                // Base layer (unfilled glyphs)
+                const baseSpan = document.createElement('span');
+                baseSpan.className = 'karaoke-word-base';
+                baseSpan.textContent = word.text;
+
+                const fillSpan = document.createElement('span');
+                fillSpan.className = 'karaoke-word-fill';
+                fillSpan.textContent = word.text;
+                fillSpan.style.width = '0%';
+                
+                wordSpan.appendChild(baseSpan);
+                wordSpan.appendChild(fillSpan);
+                
+                lineElement.appendChild(wordSpan);
+                
+                // Add space between words (except for the last word)
+                if (index < entry.words.length - 1) {
+                    lineElement.appendChild(document.createTextNode(' '));
+                }
+            });
+        } else {
+            // Mark line as lacking word-level timing so CSS can apply strong yellow
+            lineElement.classList.add('no-words');
+            // Fallback to regular text rendering for non-enhanced lyrics
+            lineElement.textContent = entry.text;
+        }
+    }
+
+    updateKaraokeWordHighlighting(currentTime) {
+        // Find all karaoke words currently visible in the overlay
+        const wordElements = document.querySelectorAll('.karaoke-word');
+        
+        wordElements.forEach(wordElement => {
+            const wordTime = parseFloat(wordElement.dataset.wordTime);
+            const entryIndex = parseInt(wordElement.dataset.entryIndex);
+            const wordIndex = parseInt(wordElement.dataset.wordIndex);
+            const fillElement = wordElement.querySelector('.karaoke-word-fill');
+            
+            if (!fillElement) return;
+            
+            // Remove previous highlighting classes
+            wordElement.classList.remove('karaoke-word-active', 'karaoke-word-sung', 'karaoke-word-upcoming');
+            
+            const entry = this.lyrics.entries[entryIndex];
+            if (!entry || !entry.words) return;
+            
+            const nextWordIndex = wordIndex + 1;
+            const nextWordTime = nextWordIndex < entry.words.length 
+                ? entry.words[nextWordIndex].time 
+                : entry.time + 3; // Give 3 seconds after last word
+            
+            if (currentTime < wordTime) {
+                // Word is upcoming
+                wordElement.classList.add('karaoke-word-upcoming');
+                fillElement.style.width = '0%';
+            } else if (currentTime >= nextWordTime) {
+                // Word is completely sung
+                wordElement.classList.add('karaoke-word-sung');
+                fillElement.style.width = '100%';
+            } else {
+                // Word is currently being sung - calculate smooth fill progress
+                wordElement.classList.add('karaoke-word-active');
+                const wordDuration = nextWordTime - wordTime;
+                const progress = wordDuration > 0 ? Math.min(1, (currentTime - wordTime) / wordDuration) : 1;
+                const fillPercentage = Math.max(0, Math.min(100, progress * 100));
+                // Always grow left->right regardless of overlay side
+                fillElement.style.left = '0%';
+                fillElement.style.right = '';
+                fillElement.style.width = `${fillPercentage}%`;
+            }
+        });
+    }
+
+    // Helpers: treat only meaningful lyric lines as displayable
+    isDisplayableLyricText(text) {
+        const t = String(text || '').trim();
+        if (t.length === 0) return false;
+        const re = /^\s*(?:\(|\[)?\s*(instrumental|music|intro|outro|interlude|solo|bridge|break|riff|chorus|verse|pre-chorus|hook)\s*(?:\)|\])?\s*$/i;
+        return !re.test(t);
+    }
+
+    findNextDisplayableIndex(fromIndex) {
+        const entries = this.lyrics?.entries || [];
+        for (let i = Math.max(-1, fromIndex) + 1; i < entries.length; i++) {
+            if (this.isDisplayableLyricText(entries[i]?.text)) return i;
+        }
+        return -1;
+    }
+
+    findPrevDisplayableIndex(fromIndex) {
+        const entries = this.lyrics?.entries || [];
+        for (let i = Math.min(fromIndex, entries.length - 1); i >= 0; i--) {
+            if (this.isDisplayableLyricText(entries[i]?.text)) return i;
+        }
+        return -1;
+    }
+
+    countDisplayablesUpTo(indexInclusive) {
+        const entries = this.lyrics?.entries || [];
+        const max = Math.min(indexInclusive, entries.length - 1);
+        let count = 0;
+        for (let i = 0; i <= max; i++) {
+            if (this.isDisplayableLyricText(entries[i]?.text)) count++;
+        }
+        return count;
     }
 
     applyAdvancedVisibility(fromUserToggle = false) {

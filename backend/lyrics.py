@@ -1,7 +1,7 @@
 import syncedlyrics
 
 
-def search_lyrics(title, artist, enhanced=False):
+def search_lyrics(title, artist, enhanced=True):
     try:
         query = f"{title} {artist}".strip()
         lrc = syncedlyrics.search(query, enhanced=enhanced)

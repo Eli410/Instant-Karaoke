@@ -11,6 +11,10 @@ body {
     color: #333;
 }
 
+:root {
+    --control-height: 40px; /* unify heights of inputs and buttons */
+}
+
 .container {
     max-width: 1200px;
     margin: 0 auto;
@@ -154,14 +158,17 @@ header p {
     transition: width 0.3s ease;
 }
 
-/* Processing Section */
-.processing-section {
-    background: white;
-    border-radius: 15px;
-    padding: 40px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-    margin-bottom: 30px;
-    text-align: center;
+/* Processing Overlay (covers entire player section) */
+.processing-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
 }
 
 .processing-content i {
@@ -336,6 +343,175 @@ header p {
     background: #fff;
 }
 
+/* Karaoke overlay on top of media */
+.karaoke-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    padding: 2.5% 3%;
+}
+
+.karaoke-overlay::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 34%;
+    background: linear-gradient(to top,
+        rgba(0,0,0,0.40) 0%,
+        rgba(0,0,0,0.28) 45%,
+        rgba(0,0,0,0.12) 75%,
+        rgba(0,0,0,0.00) 100%);
+    /* Reduce/disable blur to avoid perceived "haze" behind words */
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Disable blur over videos to avoid playback/render issues */
+.karaoke-overlay.no-blur::before {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: linear-gradient(to top,
+        rgba(0,0,0,0.50) 0%,
+        rgba(0,0,0,0.34) 45%,
+        rgba(0,0,0,0.18) 75%,
+        rgba(0,0,0,0.00) 100%);
+}
+
+.karaoke-line {
+    position: absolute;
+    color: #ffffff;
+    font-weight: 800;
+    font-size: clamp(18px, 3.2vw, 36px);
+    line-height: 1.2;
+    letter-spacing: 0.2px;
+    text-shadow: 0 2px 2px rgba(0,0,0,0.6); /* minimal shadow for readability */
+    opacity: 1; /* fully opaque text */
+    transition: opacity 0.2s ease, filter 0.2s ease, transform 0.2s ease;
+    z-index: 1;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    white-space: normal;
+}
+
+.karaoke-line-left {
+    left: 3%;
+    bottom: 16%;
+    text-align: left;
+    right: 52%; /* reserve space for right-side lines to prevent overlap */
+}
+
+.karaoke-line-right {
+    right: 3%;
+    bottom: 8%;
+    text-align: right;
+    left: 52%; /* reserve space for left-side lines to prevent overlap */
+}
+
+.karaoke-line.current { opacity: 1; }
+
+/* Strong yellow highlight for non-word-level (line-level) overlay */
+.karaoke-line.current.no-words { color: #ffeb3b; }
+.karaoke-line.current.no-words { 
+    text-shadow:
+        0 0 2px rgba(0,0,0,0.85),
+        0 1px 1px rgba(0,0,0,0.75);
+}
+
+.karaoke-line.next { opacity: 1; }
+
+/* Countdown timer in karaoke overlay - positioned dynamically relative to lyrics */
+.karaoke-timer {
+    position: absolute;
+    color: #ffffff;
+    font-weight: 800;
+    font-size: clamp(14px, 2.6vw, 22px);
+    line-height: 1.1;
+    letter-spacing: 0.2px;
+    text-shadow:
+        0 2px 2px rgba(0,0,0,0.6),
+        0 0 6px rgba(0,0,0,0.5),
+        0 0 18px rgba(0,0,0,0.4),
+        0 0 8px rgba(255,255,255,0.6),
+        0 0 18px rgba(102,126,234,0.6);
+    opacity: 0.95;
+    text-align: center;
+    z-index: 3;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    .karaoke-timer {
+        font-size: clamp(12px, 3.2vw, 18px);
+    }
+}
+
+/* Karaoke word-by-word highlighting styles */
+.karaoke-word {
+    position: relative;
+    display: inline-block;
+    overflow: hidden; /* confine fill to each word box so it can't spill to next line */
+    vertical-align: baseline;
+}
+
+/* Base unfilled glyphs (original overlay look) */
+.karaoke-word-base {
+    position: relative;
+    z-index: 0;
+    display: inline; /* ensure base text wraps naturally */
+}
+
+/* Filled glyphs overlayed on top and clipped by width */
+.karaoke-word-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    white-space: nowrap;
+    overflow: hidden; /* clip per word */
+    width: 0%;
+    color: #ffeb3b; /* bright yellow for high visibility */
+    font-weight: 900;
+    /* crisp outline for readability without blur blocks */
+    text-shadow:
+        0 0 2px rgba(0,0,0,0.85),
+        0 1px 1px rgba(0,0,0,0.75);
+    transition: width 0.06s linear;
+    display: inline-block; /* so width clips horizontally within word box */
+}
+
+.karaoke-word.karaoke-word-upcoming {
+    opacity: 0.85;
+}
+
+.karaoke-word.karaoke-word-active {
+}
+
+.karaoke-word.karaoke-word-active .karaoke-word-fill {
+}
+
+.karaoke-word.karaoke-word-sung {
+    opacity: 0.7;
+}
+
+.karaoke-word.karaoke-word-sung .karaoke-word-fill {
+    width: 100%;
+    color: #ffeb3b; /* keep the same bright yellow after completion */
+}
+
+/* Keep base text constant; highlight sweeps over without dimming */
+.karaoke-word-base { opacity: 1; }
+.karaoke-word.karaoke-word-upcoming .karaoke-word-base,
+.karaoke-word.karaoke-word-active .karaoke-word-base,
+.karaoke-word.karaoke-word-sung .karaoke-word-base { opacity: 1; }
+
+@keyframes karaokeWordGlow { from { opacity: 1; } to { opacity: 1; } }
+
 .lyrics-pane {
     background: #f9fafc;
     border: 1px solid #e9ecef;
@@ -388,6 +564,113 @@ header p {
     color: #555;
 }
 
+/* Plain text lyrics styles */
+.plain-lyrics {
+    display: block;
+    width: 100%;
+}
+
+.plain-lyric-line {
+    margin: 0 0 12px 0;
+    line-height: 1.6;
+    color: #333;
+    font-size: 0.95rem;
+    padding: 2px 0;
+}
+
+.plain-lyric-line:last-child {
+    margin-bottom: 0;
+}
+
+/* Legacy word-level highlighting styles (kept for karaoke overlay) */
+.lyric-word {
+    transition: all 0.3s ease;
+    border-radius: 3px;
+    padding: 1px 2px;
+    display: inline-block;
+}
+
+.lyric-word.word-upcoming {
+    color: inherit;
+    background: transparent;
+}
+
+.lyric-word.word-active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-weight: bold;
+    transform: scale(1.05);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    animation: wordPulse 0.6s ease-in-out;
+}
+
+.lyric-word.word-sung {
+    color: #888;
+    background: rgba(102, 126, 234, 0.1);
+    opacity: 0.7;
+}
+
+@keyframes wordPulse {
+    0% {
+        transform: scale(1);
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    }
+    50% {
+        transform: scale(1.08);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.5);
+    }
+    100% {
+        transform: scale(1.05);
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    }
+}
+
+/* Countdown timer for lyrics */
+.lyrics-countdown-timer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    text-align: center;
+    background: linear-gradient(135deg, #f8f9ff 0%, #e8f0ff 100%);
+    border: 2px solid #e0e9ff;
+    border-radius: 12px;
+    margin: 10px 0;
+}
+
+.timer-icon {
+    font-size: 2.5rem;
+    color: #667eea;
+    margin-bottom: 12px;
+    animation: pulse 2s infinite;
+}
+
+.timer-message {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #444;
+    margin-bottom: 8px;
+}
+
+.timer-countdown {
+    font-size: 2.2rem;
+    font-weight: 800;
+    color: #667eea;
+    text-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.7;
+        transform: scale(1.05);
+    }
+}
+
 .player-header {
     display: flex;
     justify-content: space-between;
@@ -409,8 +692,17 @@ header p {
 }
 
 .song-details {
-    font-size: 0.95rem;
-    color: #666;
+    font-size: 1.05rem; /* slightly larger and clearer */
+    color: #444;
+    margin: 6px auto 4px;
+    text-align: center;
+    font-weight: 700;
+    display: inline-block;
+    padding: 6px 14px;
+    border: 3px solid #e0e4ff; /* thicker border for emphasis */
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
 
 .refine-search {
@@ -419,12 +711,15 @@ header p {
     margin-top: 0;
     align-items: center; /* vertically align inputs and button */
     transform: translateY(-2px); /* nudge up to align with control buttons */
+    flex-wrap: wrap; /* allow wrapping on narrow widths */
 }
 
 .refine-search input[type="text"] {
-    padding: 8px 10px;
-    border: 1px solid #e0e0e0;
+    height: var(--control-height);
+    padding: 0 12px;
+    border: 2px solid #e9ecef;
     border-radius: 8px;
+    font-size: 0.9rem; /* match control button text */
 }
 
 .refine-search.disabled {
@@ -436,14 +731,22 @@ header p {
     gap: 10px;
 }
 
+/* When controls are inside refine-search, push them to the right */
+.refine-search .player-controls {
+    margin-left: auto;
+}
+
 .control-btn {
     background: #f8f9fa;
     border: 2px solid #e9ecef;
-    padding: 10px 20px;
+    padding: 0 20px;
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.3s ease;
     font-size: 0.9rem;
+    height: var(--control-height);
+    display: inline-flex;
+    align-items: center;
 }
 
 .control-btn:hover {
@@ -521,6 +824,7 @@ header p {
     border-radius: 10px;
     background: #fff;
     align-items: center;
+    justify-content: center; /* center stem controls */
     width: 100%;
 }
 
@@ -636,6 +940,30 @@ header p {
 /* Time seek slider width */
 .player-controls input[type="range"]#seekSlider {
     max-width: 420px;
+}
+
+/* Stacked transport controls container */
+.transport-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 320px;
+}
+
+.transport-buttons {
+    display: flex;
+    gap: 10px;
+    justify-content: center; /* center buttons horizontally */
+}
+
+.transport-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.transport-progress #seekSlider {
+    flex: 1;
 }
 
 /* Modal */
@@ -754,3 +1082,4 @@ header p {
         justify-content: center;
     }
 }
+
