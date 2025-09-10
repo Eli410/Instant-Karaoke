@@ -103,6 +103,84 @@ class InstantKaraokeApp {
         }
     }
 
+    // Try to extract a YouTube video ID from a string (URL or raw ID)
+    parseYouTubeVideoId(input) {
+        try {
+            const s = String(input || '').trim();
+            if (!s) return null;
+            // Plain 11-char ID
+            const idRegex = /^[A-Za-z0-9_-]{11}$/;
+            if (idRegex.test(s)) return s;
+            // URL forms
+            const url = new URL(s);
+            const host = (url.hostname || '').replace(/^www\./, '').toLowerCase();
+            let candidate = null;
+            if (host === 'youtu.be') {
+                candidate = (url.pathname || '').split('/').filter(Boolean)[0] || null;
+            } else if (host.endsWith('youtube.com')) {
+                const pathname = (url.pathname || '');
+                const parts = pathname.split('/').filter(Boolean);
+                if (pathname === '/watch') {
+                    candidate = url.searchParams.get('v');
+                } else if (parts[0] === 'shorts' || parts[0] === 'live' || parts[0] === 'embed' || parts[0] === 'v') {
+                    candidate = parts[1] || null;
+                }
+            }
+            if (candidate && idRegex.test(candidate)) return candidate;
+            return null;
+        } catch (_) { return null; }
+    }
+
+    // Heuristic split on a YouTube title to infer artist and song title
+    splitArtistTitle(fullTitle) {
+        try {
+            let t = String(fullTitle || '').trim();
+            if (!t) return { artist: '', title: '' };
+            // Remove bracketed/parenthetical trailer like (Official Video), [Lyrics], etc.
+            t = t.replace(/\s*[\[(\{][^\])\}]*[\])\}]\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+            // Common separators
+            const seps = [' - ', ' — ', ' – ', ' | ', ': '];
+            for (const sep of seps) {
+                const idx = t.indexOf(sep);
+                if (idx > 0 && idx < t.length - sep.length) {
+                    const artist = t.slice(0, idx).trim();
+                    const title = t.slice(idx + sep.length).trim();
+                    if (artist && title) return { artist, title };
+                }
+            }
+            // Fallback: try splitting on hyphen surrounded by spaces
+            const hy = t.split(/\s-\s/);
+            if (hy.length >= 2) {
+                const artist = hy.shift().trim();
+                const title = hy.join(' - ').trim();
+                return { artist, title };
+            }
+            return { artist: '', title: t };
+        } catch (_) { return { artist: '', title: '' }; }
+    }
+
+    // Fetch video metadata (title/author) from YouTube oEmbed (with fallback)
+    async fetchVideoMetadata(videoId) {
+        const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}&format=json`;
+        const noembedUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+        const tryFetch = async (url) => {
+            try {
+                const res = await fetch(url, { mode: 'cors' });
+                if (!res.ok) throw new Error('bad status');
+                return await res.json();
+            } catch (_) { return null; }
+        };
+        let data = await tryFetch(oembedUrl);
+        if (!data) data = await tryFetch(noembedUrl);
+        if (!data) return { title: '', artist: '' };
+        const rawTitle = (data.title || '').toString();
+        const author = (data.author_name || '').toString();
+        const split = this.splitArtistTitle(rawTitle);
+        const artist = split.artist || author || '';
+        const title = split.title || rawTitle || '';
+        return { title, artist };
+    }
+
     initializeLyrics() {
         this.lyrics = {
             entries: [],
@@ -1141,18 +1219,63 @@ class InstantKaraokeApp {
         const results = document.getElementById('youtubeResults');
         if (!searchBtn || !searchInput || !results) return;
 
-        const triggerSearch = () => {
+        const triggerSearch = async () => {
             const query = (searchInput.value || '').trim();
             results.innerHTML = '';
             const placeholder = document.createElement('div');
             placeholder.className = 'placeholder';
             if (query.length === 0) {
                 placeholder.innerHTML = '<i class="fas fa-info-circle"></i> Enter a query to search YouTube.';
-            } else {
-                placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Searching for \"${this.escapeHtml(query)}\"...`;
-                this.fetchYouTubeResults(query, results);
+                results.appendChild(placeholder);
+                return;
             }
+            // If the query looks like a YouTube URL or raw ID, start that video directly
+            const directId = this.parseYouTubeVideoId(query);
+            if (directId) {
+                placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Loading video...`;
+                results.appendChild(placeholder);
+                try {
+                    // If a session is active, confirm replacement and reset like card click handler
+                    const hasActiveSession = !!this.currentSession || this.transport.isPlaying || Object.keys(this.audioSources || {}).length > 0;
+                    if (hasActiveSession) {
+                        const ok = window.confirm('A song is currently loaded. Replace it with the new selection?');
+                        if (!ok) { results.innerHTML = ''; return; }
+                        this.stopAll();
+                        if (this.activeSessionId) {
+                            try { await fetch(`/api/cleanup/${encodeURIComponent(this.activeSessionId)}`, { method: 'POST' }); } catch (_) {}
+                        }
+                        this.currentSession = null;
+                        this.audioBuffers = {};
+                        this.audioSources = {};
+                        this.trackStates = {};
+                        this.scheduler.perStem = {};
+                        this.scheduler.shouldAutoStart = true;
+                        this.scheduler.done = false;
+                        this.scheduler.continuousLoaded = false;
+                        this.scheduler.usingChunks = true;
+                        this.transport.duration = 0;
+                        const stemsContainer = document.getElementById('stemsContainer');
+                        if (stemsContainer) stemsContainer.innerHTML = '';
+                        const seekSlider = document.getElementById('seekSlider');
+                        const currentLabel = document.getElementById('currentTimeLabel');
+                        const totalLabel = document.getElementById('totalTimeLabel');
+                        if (seekSlider) { seekSlider.value = 0; seekSlider.disabled = true; }
+                        if (currentLabel) currentLabel.textContent = '0:00';
+                        if (totalLabel) totalLabel.textContent = '0:00';
+                    }
+                    let meta = { title: '', artist: '' };
+                    try { meta = await this.fetchVideoMetadata(directId); } catch (_) { /* ignore */ }
+                    await this.startYouTubeSession(directId, { title: meta.title || '', artist: meta.artist || '', type: 'video', thumbnail: '' });
+                } finally {
+                    // Clear the results pane once the video session starts
+                    results.innerHTML = '';
+                }
+                return;
+            }
+            // Otherwise perform a text search
+            placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Searching for \"${this.escapeHtml(query)}\"...`;
             results.appendChild(placeholder);
+            this.fetchYouTubeResults(query, results);
         };
 
         searchBtn.addEventListener('click', (e) => {
