@@ -2,6 +2,8 @@
 
 AI‑powered karaoke web app that separates music into stems (vocals, drums, bass, other) and plays them back with synced lyrics. Works with YouTube links or local audio files.
 
+![Search UI](github/search.png)
+![Player UI](github/player.png)
 ### Features
 - Real‑time stem separation with Demucs (PyTorch), chunked for low latency and cross‑faded for seamless full tracks
 - YouTube search and streaming (ytmusicapi + yt‑dlp), or upload WAV/MP3/FLAC/M4A/OGG
