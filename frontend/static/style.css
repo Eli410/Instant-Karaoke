@@ -729,6 +729,8 @@ header p {
 .player-controls {
     display: flex;
     gap: 10px;
+    justify-content: center; /* center controls row */
+    width: 100%;
 }
 
 /* When controls are inside refine-search, push them to the right */
@@ -759,6 +761,18 @@ header p {
     background: #667eea;
     color: white;
     border-color: #667eea;
+}
+
+/* Prevent hover styling on disabled Word-level button */
+#lyricsWordLevelToggleBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#lyricsWordLevelToggleBtn:disabled:hover {
+    background: #f8f9fa;
+    color: inherit;
+    border-color: #e9ecef;
 }
 
 /* Chunks Container */
@@ -948,6 +962,7 @@ header p {
     flex-direction: column;
     gap: 8px;
     min-width: 320px;
+    align-items: center; /* center inner column */
 }
 
 .transport-buttons {
@@ -960,6 +975,7 @@ header p {
     display: flex;
     align-items: center;
     gap: 10px;
+    justify-content: center; /* center progress area */
 }
 
 .transport-progress #seekSlider {

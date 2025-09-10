@@ -86,6 +86,21 @@ class InstantKaraokeApp {
         this.setupRefineSearch();
         // Refine search is lyrics-only and disabled until a song is chosen
         this.setRefineSearchEnabled(false);
+        // Lyrics: Word-level toggle button
+        const wordToggle = document.getElementById('lyricsWordLevelToggleBtn');
+        if (wordToggle) {
+            wordToggle.addEventListener('click', () => this.toggleWordLevel());
+        }
+        // Lyrics: Upload .lrc file
+        const uploadLyricsBtn = document.getElementById('uploadLyricsBtn');
+        const lyricsFileInput = document.getElementById('lyricsFileInput');
+        if (uploadLyricsBtn && lyricsFileInput) {
+            uploadLyricsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (lyricsFileInput) lyricsFileInput.click();
+            });
+            lyricsFileInput.addEventListener('change', (e) => this.handleLyricsFileSelect(e));
+        }
     }
 
     initializeLyrics() {
@@ -97,8 +112,75 @@ class InstantKaraokeApp {
             currentBlockStart: 0,
             _lastRenderedBlockStart: -1,
             _countdown: { active: false, targetTime: 0, side: 'right' },
+            wordLevelEnabled: true,
         };
         this.lyricsContainer = document.getElementById('lyricsContainer');
+    }
+
+    async handleLyricsFileSelect(event) {
+        try {
+            const input = event.target;
+            const file = input && input.files && input.files[0];
+            if (!file) return;
+            if (!/\.lrc$/i.test(file.name)) {
+                this.showError('Please select a .lrc lyrics file.');
+                return;
+            }
+            const text = await file.text();
+            // Apply uploaded lyrics immediately
+            this.parseAndSetLyrics(text || '');
+            // Reset offset on new lyrics
+            this.resetLyricsOffset();
+            // Update karaoke overlay preview
+            this.updateKaraokeOverlay(-1);
+        } catch (err) {
+            this.showError(err && err.message ? err.message : 'Failed to load lyrics file');
+        } finally {
+            // Clear input so same file can be re-selected later
+            try { event.target.value = ''; } catch (_) {}
+        }
+    }
+
+    // Determine if current lyrics have any word-level timestamps
+    hasWordLevelLyrics() {
+        try {
+            const entries = this.lyrics?.entries || [];
+            return entries.some(e => e && Array.isArray(e.words) && e.words.length > 0);
+        } catch (_) { return false; }
+    }
+
+    // Update the Word-level toggle button state (label + disabled)
+    updateWordLevelToggleUI() {
+        const btn = document.getElementById('lyricsWordLevelToggleBtn');
+        if (!btn) return;
+        const hasWord = this.hasWordLevelLyrics();
+        btn.disabled = !hasWord;
+        const on = !!(this.lyrics && this.lyrics.wordLevelEnabled && hasWord);
+        btn.textContent = `Word-level: ${on ? 'On' : 'Off'}`;
+    }
+
+    // Toggle word-level karaoke highlighting
+    toggleWordLevel() {
+        try {
+            // Only allow toggling if we actually have word-level lyrics
+            if (!this.hasWordLevelLyrics()) {
+                this.updateWordLevelToggleUI();
+                return;
+            }
+            if (!this.lyrics) this.initializeLyrics();
+            // default to enabled
+            if (typeof this.lyrics.wordLevelEnabled !== 'boolean') {
+                this.lyrics.wordLevelEnabled = true;
+            }
+            this.lyrics.wordLevelEnabled = !this.lyrics.wordLevelEnabled;
+            const btn = document.getElementById('lyricsWordLevelToggleBtn');
+            if (btn) {
+                btn.textContent = `Word-level: ${this.lyrics.wordLevelEnabled ? 'On' : 'Off'}`;
+                btn.disabled = !this.hasWordLevelLyrics();
+            }
+            // Re-render overlay to reflect mode change
+            this.updateKaraokeOverlay(this.lyrics.activeIndex);
+        } catch (_) { /* ignore */ }
     }
 
     resetLyricsOffset() {
@@ -587,6 +669,8 @@ class InstantKaraokeApp {
         }
         // Enable refine search once a song is chosen
         this.setRefineSearchEnabled(true);
+        // Sync word-level toggle UI
+        this.updateWordLevelToggleUI();
     }
 
     createStemElement(stemName, stemData) {
@@ -1427,8 +1511,11 @@ class InstantKaraokeApp {
                 
                 if (wordMatches.length > 0) {
                     words = wordMatches;
-                    // Extract clean text without timestamps for display
-                    text = wordMatches.map(w => w.text).join(' ').trim();
+                    // Extract clean text by stripping inline timestamps, preserving punctuation/hyphens
+                    text = rawText
+                        .replace(/<(\d{2}):(\d{2})(?:\.(\d{1,3}))?>/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
                 }
             }
             
@@ -1446,6 +1533,8 @@ class InstantKaraokeApp {
         this.lyrics.currentBlockStart = 0;
         this.lyrics._lastRenderedBlockStart = -1;
         this.lyrics._countdown.active = false; // Reset countdown state for new lyrics
+        // After parsing, update word-level toggle availability
+        this.updateWordLevelToggleUI();
         this.renderLyrics(-1);
         // Show first two lines immediately in overlay to indicate readiness
         this.updateKaraokeOverlay(-1);
@@ -1494,6 +1583,8 @@ class InstantKaraokeApp {
             const p = document.createElement('p');
             p.textContent = 'No lyrics found.';
             container.appendChild(p);
+            // Keep toggle UI in sync when no lyrics
+            this.updateWordLevelToggleUI();
             return;
         }
         
@@ -1759,8 +1850,9 @@ class InstantKaraokeApp {
         lineElement.classList.remove('current', 'next', 'no-words');
         lineElement.classList.add(state);
 
-        // If we have word-level timing data, render individual words as spans
-        if (entry.words && entry.words.length > 0) {
+        const wordEnabled = !!(this.lyrics && this.lyrics.wordLevelEnabled);
+        // If we have word-level timing data and feature is enabled, render individual words as spans
+        if (wordEnabled && entry.words && entry.words.length > 0) {
             entry.words.forEach((word, index) => {
                 const wordSpan = document.createElement('span');
                 wordSpan.className = 'karaoke-word';
@@ -1797,6 +1889,8 @@ class InstantKaraokeApp {
     }
 
     updateKaraokeWordHighlighting(currentTime) {
+        // Skip if word-level highlighting is disabled
+        if (!this.lyrics || !this.lyrics.wordLevelEnabled) return;
         // Find all karaoke words currently visible in the overlay
         const wordElements = document.querySelectorAll('.karaoke-word');
         
@@ -1815,9 +1909,19 @@ class InstantKaraokeApp {
             if (!entry || !entry.words) return;
             
             const nextWordIndex = wordIndex + 1;
-            const nextWordTime = nextWordIndex < entry.words.length 
-                ? entry.words[nextWordIndex].time 
-                : entry.time + 3; // Give 3 seconds after last word
+            // Determine end boundary for the current word:
+            // 1) Next word in the same line, else
+            // 2) Start of the next entry (line), else
+            // 3) Small fallback window after the word start
+            let nextWordTime;
+            if (nextWordIndex < entry.words.length) {
+                nextWordTime = entry.words[nextWordIndex].time;
+            } else {
+                const nextEntry = this.lyrics.entries[entryIndex + 1];
+                nextWordTime = nextEntry && typeof nextEntry.time === 'number' 
+                    ? nextEntry.time 
+                    : wordTime + 0.6; // conservative default
+            }
             
             if (currentTime < wordTime) {
                 // Word is upcoming

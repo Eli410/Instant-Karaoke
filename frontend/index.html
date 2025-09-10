@@ -62,22 +62,10 @@
                             <input type="text" id="refineArtistInput" placeholder="Artist" />
                             <input type="text" id="refineTitleInput" placeholder="Song title" />
                             <button class="control-btn" id="refineSearchBtn">Search & Replace Lyrics</button>
-                            <div class="player-controls" id="playerControls" style="display: none; margin-left:auto;">
-                                <div class="transport-controls">
-                                    <div class="transport-buttons">
-                                        <button id="playPauseBtn" class="control-btn" type="button">Play</button>
-                                        <button id="stopAllBtn" class="control-btn" type="button">Stop</button>
-                                    </div>
-                                    <div class="transport-progress">
-                                        <span id="currentTimeLabel">0:00</span>
-                                        <input id="seekSlider" type="range" min="0" max="100" value="0">
-                                        <span id="totalTimeLabel">0:00</span>
-                                    </div>
-                                </div>
-                                <div class="track-toggle" id="advancedToggle" title="Show/hide advanced stem controls">
-                                    <div class="toggle-switch" id="advancedToggleSwitch"></div>
-                                    <span id="advancedToggleLabel">Advanced</span>
-                                </div>
+                            <button class="control-btn" id="lyricsWordLevelToggleBtn" type="button" title="Toggle word-level karaoke highlighting">Word-level: On</button>
+                            <div class="track-toggle" id="advancedToggle" title="Show/hide advanced stem controls">
+                                <div class="toggle-switch" id="advancedToggleSwitch"></div>
+                                <span id="advancedToggleLabel">Advanced</span>
                             </div>
                         </form>
                     </div>
@@ -97,6 +85,19 @@
 
                 <div class="player-body">
                     <div id="songDetails" class="song-details"></div>
+                    <div class="player-controls" id="playerControls" style="display: none;">
+                        <div class="transport-controls">
+                            <div class="transport-buttons">
+                                <button id="playPauseBtn" class="control-btn" type="button">Play</button>
+                                <button id="stopAllBtn" class="control-btn" type="button">Stop</button>
+                            </div>
+                            <div class="transport-progress">
+                                <span id="currentTimeLabel">0:00</span>
+                                <input id="seekSlider" type="range" min="0" max="100" value="0">
+                                <span id="totalTimeLabel">0:00</span>
+                            </div>
+                        </div>
+                    </div>
                     <div class="tracks-container" id="stemsContainer">
                         <!-- Stems will be dynamically added here -->
                     </div>
@@ -108,6 +109,8 @@
                     <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
                         <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics
                             <div id="lyricsOffsetControls" style="float:right; display:flex; align-items:center; gap:8px;">
+                                <input type="file" id="lyricsFileInput" accept=".lrc" hidden>
+                                <button id="uploadLyricsBtn" class="control-btn" title="Upload .lrc lyrics file">Upload Lyrics</button>
                                 <button id="lyricsOffsetMinus" class="control-btn" title="Shift lyrics earlier by 0.5s">-0.5s</button>
                                 <span id="lyricsOffsetValue">0.0s</span>
                                 <button id="lyricsOffsetPlus" class="control-btn" title="Shift lyrics later by 0.5s">+0.5s</button>

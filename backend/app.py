@@ -8,7 +8,6 @@ import uuid
 from werkzeug.utils import secure_filename
 import soundfile as sf
 from pydub import AudioSegment
-import imageio_ffmpeg as iio_ffmpeg
 from .audio_separation import load_model, process
 import threading
 import time
@@ -48,8 +47,8 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
 
-FFMPEG_EXE = iio_ffmpeg.get_ffmpeg_exe()
-# Configure pydub to use imageio-ffmpeg's bundled ffmpeg binary
+# Use system ffmpeg. Ensure ffmpeg is available on PATH.
+FFMPEG_EXE = 'ffmpeg'
 AudioSegment.converter = FFMPEG_EXE
 
 
@@ -325,8 +324,8 @@ def yt_search_endpoint():
                 r['type'] = 'song'
             except Exception:
                 pass
-        songs_top10 = _dedupe(songs)[:10]
-        videos_top10 = _dedupe(videos)[:5]
+        songs = _dedupe(songs)[:7] 
+        videos = _dedupe(videos)[:3]
         def _views_to_int(v):
             try:
                 if v is None:
@@ -349,7 +348,7 @@ def yt_search_endpoint():
                 return int(num * mult)
             except Exception:
                 return 0
-        combined = songs_top10 + videos_top10
+        combined = songs + videos
         combined.sort(key=lambda x: _views_to_int(x.get('views')), reverse=True)
         return jsonify({'results': combined})
     except Exception as e:
