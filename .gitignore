@@ -180,5 +180,8 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# igore ds store
+.DS_Store
+
 # ignore test_audio folder
 test_audio/
