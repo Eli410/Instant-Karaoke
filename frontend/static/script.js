@@ -24,9 +24,16 @@ class InstantKaraokeApp {
             continuousLoaded: false,
         };
         
+        // Key change state
+        this.keyOffset = 0; // semitones offset from original key
+        this.pitchRatio = 1.0; // playback rate multiplier for pitch changes
+        
         this.initializeEventListeners();
         this.initializeAudioContext();
         this.initializeLyrics();
+        
+        // Initialize key offset display
+        this.updateKeyOffsetDisplay();
     }
 
     initializeEventListeners() {
@@ -62,6 +69,10 @@ class InstantKaraokeApp {
         const seekSlider = document.getElementById('seekSlider');
         seekSlider.addEventListener('input', (e) => this.onSeekInput(e));
         seekSlider.disabled = true; // enable when continuous stems ready
+
+        // Key change controls
+        document.getElementById('keyUpBtn').addEventListener('click', () => this.changeKey(1));
+        document.getElementById('keyDownBtn').addEventListener('click', () => this.changeKey(-1));
 
         // Advanced toggle (switch-style)
         this.isAdvanced = false;
@@ -268,20 +279,40 @@ class InstantKaraokeApp {
         if (value) value.textContent = '0.0s';
     }
 
-    initializeAudioContext() {
+    async initializeAudioContext() {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            // Master chain: stems -> masterGain -> compressor -> softClipper -> destination
+            this.pitchWorklet = null;
+
+            // Master chain base: stems -> masterGain -> (pitchWorklet|bypass) -> compressor -> softClipper -> destination
             this.masterGain = this.audioContext.createGain();
-            this.masterGain.gain.value = 0.6; // more headroom
+            this.masterGain.gain.value = 0.6; // headroom
+
             this.compressor = this.audioContext.createDynamicsCompressor();
-            this.compressor.threshold.value = -9; // stronger limiting
+            this.compressor.threshold.value = -9;
             this.compressor.knee.value = 12;
             this.compressor.ratio.value = 12;
             this.compressor.attack.value = 0.002;
             this.compressor.release.value = 0.2;
             this.softClipper = this.createSoftClipper(2.5);
-            this.masterGain.connect(this.compressor);
+
+            // Try to load AudioWorklet pitch shifter for continuous key shifting
+            try {
+                await this.audioContext.audioWorklet.addModule('/static/pitch-shifter-processor.js');
+                this.pitchWorklet = new AudioWorkletNode(this.audioContext, 'pitch-shifter-processor', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    outputChannelCount: [2],
+                });
+                const param = this.pitchWorklet.parameters.get('pitch');
+                if (param) param.setValueAtTime(1.0, this.audioContext.currentTime);
+                this.masterGain.connect(this.pitchWorklet);
+                this.pitchWorklet.connect(this.compressor);
+            } catch (err) {
+                // Fallback to bypass if worklet not available
+                console.warn('Pitch worklet unavailable, bypassing continuous pitch shift:', err);
+                this.masterGain.connect(this.compressor);
+            }
             this.compressor.connect(this.softClipper);
             this.softClipper.connect(this.audioContext.destination);
         } catch (e) {
@@ -301,6 +332,18 @@ class InstantKaraokeApp {
         node.curve = curve;
         node.oversample = '4x';
         return node;
+    }
+
+    createPitchShifter() {
+        // For now, create a simple gain node as a placeholder for pitch shifting
+        // We'll implement pitch shifting by restarting sources with modified playback rates
+        const pitchNode = this.audioContext.createGain();
+        pitchNode.gain.value = 1.0;
+        
+        // Store current pitch ratio (1.0 = no change)
+        this.pitchRatio = 1.0;
+        
+        return pitchNode;
     }
 
     handleDragOver(e) {
@@ -446,7 +489,7 @@ class InstantKaraokeApp {
         
         stemNames.forEach(async (stemName, idx) => {
             const stemData = stems[stemName];
-            const audioUrl = `/api/audio/${session_id}/${stemData.filename}`;
+            const audioUrl = this.buildPitchedUrl(`/api/audio/${session_id}/${stemData.filename}`);
             try {
                 const response = await fetch(audioUrl);
                 const arrayBuffer = await response.arrayBuffer();
@@ -517,10 +560,8 @@ class InstantKaraokeApp {
                     }
                 }
                 
-                // Log auto-start with buffer info
-                if (shouldAutoStart && !this.transport.isPlaying) {
-                    console.log(`Auto-starting playback with ${minReadyChunks} chunks buffered for each stem`);
-                }
+                // Auto-start silently when we have enough buffered chunks
+                // (previously logged to console)
                 
 
                 this.scheduler.done = status.done;
@@ -548,7 +589,7 @@ class InstantKaraokeApp {
 
 
     async loadContinuousStem(sessionId, stemName) {
-        const url = `/api/audio/${sessionId}/${stemName}.wav`;
+        const url = this.buildPitchedUrl(`/api/audio/${sessionId}/${stemName}.wav`);
         const res = await fetch(url);
         const buf = await res.arrayBuffer();
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
@@ -569,7 +610,7 @@ class InstantKaraokeApp {
             return;
         }
 
-        const url = `/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`;
+        const url = this.buildPitchedUrl(`/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`);
         const res = await fetch(url);
         const buf = await res.arrayBuffer();
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
@@ -633,7 +674,7 @@ class InstantKaraokeApp {
                 }
                 
                 try {
-                    const url = `/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`;
+                    const url = this.buildPitchedUrl(`/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`);
                     const res = await fetch(url);
                     const buf = await res.arrayBuffer();
                     const audioBuffer = await this.audioContext.decodeAudioData(buf);
@@ -908,6 +949,114 @@ class InstantKaraokeApp {
         }
     }
 
+    changeKey(semitonesChange) {
+        // Update key offset
+        this.keyOffset += semitonesChange;
+        this.keyOffset = Math.max(-12, Math.min(12, this.keyOffset));
+        this.pitchRatio = Math.pow(2, this.keyOffset / 12);
+        this.updateKeyOffsetDisplay();
+        // Stop any preview and restore main gain if ducked
+        if (this._previewSource) {
+            try { this._previewSource.stop(); } catch (_) {}
+            this._previewSource = null;
+        }
+        if (this._restoreMasterGain) {
+            try { this._restoreMasterGain(); } catch (_) {}
+            this._restoreMasterGain = null;
+        }
+        // Reload audio via pitched endpoint and resume
+        const resumeAt = this.getCurrentTime();
+        const wasPlaying = this.transport.isPlaying;
+        this.stopAll();
+        if (this.scheduler.usingChunks) {
+            this.audioSources = {};
+            this.transport.pausedAt = resumeAt;
+            if (wasPlaying) this.togglePlayPause(); else this.updatePlayPauseUI();
+        } else {
+            const sessionId = this.currentSession.session_id;
+            const stemNames = Object.keys(this.audioBuffers);
+            Promise.all(stemNames.map(name => this.loadContinuousStem(sessionId, name))).then(() => {
+                if (!wasPlaying) {
+                    this.transport.pausedAt = resumeAt;
+                    this.updatePlayPauseUI();
+                } else {
+                    this.transport.pausedAt = resumeAt;
+                    if (!this.transport.isPlaying) this.togglePlayPause();
+                }
+            }).catch(() => {
+                this.transport.pausedAt = resumeAt;
+                this.updatePlayPauseUI();
+            });
+        }
+    }
+
+    async fetchPitchPreview() {
+        try {
+            if (!this.currentSession || !this.currentSession.session_id) return;
+            const sessionId = this.currentSession.session_id;
+            const currentTime = this.getCurrentTime();
+            const start = Math.max(0, currentTime);
+            const dur = 2.5; // short, responsive snippet
+            const ts = Date.now();
+            const url = `/api/pitch_preview/${encodeURIComponent(sessionId)}?semitones=${encodeURIComponent(this.keyOffset)}&start=${encodeURIComponent(start)}&dur=${encodeURIComponent(dur)}&ts=${encodeURIComponent(ts)}`;
+            // Ensure audio context is running after user gesture
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                try { await this.audioContext.resume(); } catch (_) {}
+            }
+            const res = await fetch(url, { cache: 'no-store' });
+            if (!res.ok) return;
+            const arr = await res.arrayBuffer();
+            const buf = await this.audioContext.decodeAudioData(arr);
+            // Play shifted preview clearly: stop prior preview and duck main mix
+            // Stop any prior preview to avoid overlap and restore ducking if active
+            if (this._previewSource) {
+                try { this._previewSource.stop(); } catch (_) {}
+                this._previewSource = null;
+            }
+            if (this._restoreMasterGain) {
+                try { this._restoreMasterGain(); } catch (_) {}
+                this._restoreMasterGain = null;
+            }
+            const src = this.audioContext.createBufferSource();
+            src.buffer = buf;
+            const g = this.audioContext.createGain();
+            g.gain.value = 1.0;
+            // Route preview to bypass masterGain (so ducking does not mute it)
+            // Chain: preview -> gain -> compressor -> softClipper -> destination
+            src.connect(g).connect(this.compressor);
+            const when = this.audioContext.currentTime + 0.02;
+            src.start(when);
+            this._previewSource = src;
+            // Duck the main mix during preview
+            const prevMaster = this.masterGain.gain.value;
+            this.masterGain.gain.value = 0.0;
+            this._restoreMasterGain = () => {
+                if (this.masterGain) this.masterGain.gain.value = prevMaster;
+            };
+            src.onended = () => {
+                if (this._restoreMasterGain) { try { this._restoreMasterGain(); } catch (_) {} this._restoreMasterGain = null; }
+            };
+            // Auto-stop after buffer duration just in case
+            const stopAt = when + buf.duration + 0.1;
+            src.stop(stopAt);
+            // Safety restore if onended is missed
+            setTimeout(() => {
+                if (this._restoreMasterGain) { try { this._restoreMasterGain(); } catch (_) {} this._restoreMasterGain = null; }
+            }, Math.max(50, (stopAt - this.audioContext.currentTime) * 1000));
+        } catch (_) {
+            // ignore preview failures
+        }
+    }
+
+    updateKeyOffsetDisplay() {
+        const display = document.getElementById('keyOffsetDisplay');
+        if (display) {
+            const sign = this.keyOffset > 0 ? '+' : '';
+            display.textContent = `Key: ${sign}${this.keyOffset}`;
+        }
+    }
+
+
     startPlaybackWhenReady() {
         // Start continuous playback of available stems; others join when decoded
         this.stopAll();
@@ -1173,6 +1322,16 @@ class InstantKaraokeApp {
         this.audioSources = {};
         this.trackStates = {};
         
+        // Reset key offset
+        this.keyOffset = 0;
+        this.pitchRatio = 1.0;
+        this.updateKeyOffsetDisplay();
+        // Force worklet back to neutral
+        if (this.pitchWorklet && this.pitchWorklet.parameters) {
+            const param = this.pitchWorklet.parameters.get('pitch');
+            if (param) param.setValueAtTime(1.0, this.audioContext.currentTime);
+        }
+        
         // Reset scheduler
         this.scheduler.perStem = {};
         this.scheduler.shouldAutoStart = true;
@@ -1248,6 +1407,10 @@ class InstantKaraokeApp {
                         this.audioBuffers = {};
                         this.audioSources = {};
                         this.trackStates = {};
+                        // Reset key offset
+                        this.keyOffset = 0;
+                        this.pitchRatio = 1.0;
+                        this.updateKeyOffsetDisplay();
                         this.scheduler.perStem = {};
                         this.scheduler.shouldAutoStart = true;
                         this.scheduler.done = false;
@@ -1352,6 +1515,10 @@ class InstantKaraokeApp {
                         this.audioBuffers = {};
                         this.audioSources = {};
                         this.trackStates = {};
+                        // Reset key offset
+                        this.keyOffset = 0;
+                        this.pitchRatio = 1.0;
+                        this.updateKeyOffsetDisplay();
                         this.scheduler.perStem = {};
                         this.scheduler.shouldAutoStart = true;
                         this.scheduler.done = false;
@@ -1878,14 +2045,12 @@ class InstantKaraokeApp {
                 if (secondsRemaining <= 0.01) { // Hide when lyric actually starts
                     this.lyrics._countdown.active = false;
                     timer.style.display = 'none';
-                } else if (secondsRemaining <= 5) { // Only show timer when 5 seconds or less
+                } else {
                     timer.style.display = 'block';
                     // Show actual countdown including 0s
                     const displayTime = Math.max(0, Math.ceil(secondsRemaining - 1));
                     timer.textContent = this.formatCountdown(displayTime);
                     // Position will be set after lyrics are rendered
-                } else {
-                    timer.style.display = 'none'; // Hide timer when more than 5 seconds
                 }
             } else {
                 timer.style.display = 'none';
@@ -2262,6 +2427,24 @@ class InstantKaraokeApp {
         set(titleInput, enabled);
         if (form) {
             if (enabled) form.classList.remove('disabled'); else form.classList.add('disabled');
+        }
+    }
+
+    // Build a URL that goes through pitch endpoint when a key offset is active
+    buildPitchedUrl(originalPath) {
+        const semis = this.keyOffset || 0;
+        if (Math.abs(semis) < 1e-6) {
+            return originalPath;
+        }
+        try {
+            const m = originalPath.match(/^\/api\/audio\/([^\/]+)\/(.+)$/);
+            if (!m) return originalPath;
+            const sessionId = m[1];
+            const filename = m[2];
+            const ts = Date.now();
+            return `/api/pitch_audio/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}?semitones=${encodeURIComponent(semis)}&ts=${encodeURIComponent(ts)}`;
+        } catch (_) {
+            return originalPath;
         }
     }
 }

@@ -1,4 +1,5 @@
 import os
+import logging
 import torch
 import numpy as np
 from typing import Dict, Optional
@@ -25,7 +26,7 @@ def load_model(model_name: str = 'htdemucs'):
         model.load_state_dict(state_dict)
         model.eval()
 
-        print('Model loaded successfully, keeping on CPU for now')
+        logging.info('Model loaded successfully, keeping on CPU for now')
         return model
     except Exception as e:
         raise Exception(f'Failed to initialize model: {e}')
@@ -68,21 +69,9 @@ def process(
     waveform = waveform.unsqueeze(0).to(device)
     model = model.to(device)
 
-    print(f'Debug - Input waveform shape: {waveform.shape}, device: {waveform.device}')
-    print(f'Debug - Model device: {next(model.parameters()).device}')
-
     with torch.no_grad():
         separated_sources = model(waveform)
 
-    print(f'Debug - Output type: {type(separated_sources)}')
-    if isinstance(separated_sources, torch.Tensor):
-        print(f'Debug - Output shape: {separated_sources.shape}')
-    elif hasattr(separated_sources, '__len__'):
-        print(f'Debug - Output length: {len(separated_sources)}')
-        if len(separated_sources) > 0 and torch.is_tensor(separated_sources[0]):
-            print(f'Debug - First element shape: {separated_sources[0].shape}')
-
-    print('Debug - Finished model inference')
 
     if hasattr(model, 'sources'):
         source_names = model.sources

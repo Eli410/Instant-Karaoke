@@ -17,6 +17,7 @@ from .ytdl import get_streams
 import subprocess
 import io
 from .lyrics import search_lyrics
+from .pitch import pitch_shift_preview
 import logging
 
 
@@ -26,6 +27,10 @@ app = Flask(
     static_url_path='/static'
 )
 CORS(app)
+
+# Reduce noisy request logs from Werkzeug/Flask in console
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
+app.logger.setLevel(logging.WARNING)
 
 
 model = None
@@ -57,9 +62,9 @@ def cleanup_temp_files():
     try:
         if os.path.exists(TEMP_BASE_DIR):
             shutil.rmtree(TEMP_BASE_DIR)
-            print(f"Cleaned up temporary directory: {TEMP_BASE_DIR}")
+            logging.debug(f"Cleaned up temporary directory: {TEMP_BASE_DIR}")
     except Exception as e:
-        print(f"Error cleaning up temp files: {e}")
+        logging.warning(f"Error cleaning up temp files: {e}")
 
 
 def cleanup_session_files(session_id):
@@ -68,15 +73,15 @@ def cleanup_session_files(session_id):
         session_folder = os.path.join(PROCESSED_FOLDER, session_id)
         if os.path.exists(session_folder):
             shutil.rmtree(session_folder)
-            print(f"Cleaned up session folder: {session_id}")
+            logging.debug(f"Cleaned up session folder: {session_id}")
 
         if session_id in SESSIONS and 'filepath' in SESSIONS[session_id]:
             filepath = SESSIONS[session_id]['filepath']
             if os.path.exists(filepath):
                 os.remove(filepath)
-                print(f"Cleaned up uploaded file: {filepath}")
+                logging.debug(f"Cleaned up uploaded file: {filepath}")
     except Exception as e:
-        print(f"Error cleaning up session {session_id}: {e}")
+        logging.warning(f"Error cleaning up session {session_id}: {e}")
 
 
 def cleanup_old_sessions():
@@ -91,7 +96,7 @@ def cleanup_old_sessions():
         cleanup_session_files(session_id)
         if session_id in SESSIONS:
             del SESSIONS[session_id]
-        print(f"Auto-cleaned up old session: {session_id}")
+        logging.debug(f"Auto-cleaned up old session: {session_id}")
 
 
 def background_cleanup_task():
@@ -100,15 +105,15 @@ def background_cleanup_task():
             cleanup_old_sessions()
             time.sleep(3600)
         except Exception as e:
-            print(f"Error in background cleanup: {e}")
+            logging.warning(f"Error in background cleanup: {e}")
             time.sleep(60)
 
 
 atexit.register(cleanup_temp_files)
 
-print(f"Temporary files will be stored in: {TEMP_BASE_DIR}")
-print(f"Upload folder: {UPLOAD_FOLDER}")
-print(f"Processed folder: {PROCESSED_FOLDER}")
+logging.info(f"Temporary files will be stored in: {TEMP_BASE_DIR}")
+logging.info(f"Upload folder: {UPLOAD_FOLDER}")
+logging.info(f"Processed folder: {PROCESSED_FOLDER}")
 
 
 def allowed_file(filename):
@@ -119,9 +124,9 @@ def load_model_safe():
     global model
     with model_lock:
         if model is None:
-            print('Loading model...')
+            logging.info('Loading model...')
             model = load_model('htdemucs')
-            print('Model loaded successfully!')
+            logging.info('Model loaded successfully!')
         return model
 
 
@@ -224,7 +229,7 @@ def upload_audio():
                 mdl = load_model_safe()
                 stem_buffers = {}
                 for i, chunk in enumerate(chunks):
-                    print(f"Processing chunk {i+1}/{len(chunks)} for session {session_id}")
+                    logging.debug(f"Processing chunk {i+1}/{len(chunks)} for session {session_id}")
                     separated = process(audio_array=chunk, model=mdl, device='cpu')
                     for stem_name, stem_audio in separated.items():
                         SESSIONS[session_id]['stems'].add(stem_name)
@@ -262,6 +267,30 @@ def upload_audio():
 def get_audio_file(session_id, filename):
     session_folder = os.path.join(PROCESSED_FOLDER, session_id)
     return send_from_directory(session_folder, filename)
+
+@app.route('/api/pitch_audio/<session_id>/<path:filename>')
+def get_pitched_audio_file(session_id, filename):
+    try:
+        semitones_q = request.args.get('semitones', '0')
+        semitones = float(semitones_q)
+        session_folder = os.path.join(PROCESSED_FOLDER, session_id)
+        file_path = os.path.join(session_folder, filename)
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'file not found'}), 404
+        # Fast path: no shift
+        if abs(semitones) < 1e-6:
+            return send_from_directory(session_folder, filename)
+        # Load entire file, convert to stereo int16, then shift
+        audio_data, sample_rate = sf.read(file_path, always_2d=True)
+        if audio_data.shape[1] == 1:
+            audio_data = np.repeat(audio_data, 2, axis=1)
+        if audio_data.dtype != np.int16:
+            audio_data = (audio_data * 32767).astype(np.int16)
+        total_duration = float(audio_data.shape[0]) / float(sample_rate)
+        wav_bytes = pitch_shift_preview(audio_data, sample_rate, semitones, start_s=0.0, dur_s=total_duration + 1.0)
+        return app.response_class(wav_bytes, mimetype='audio/wav')
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
 
 @app.route('/api/status/<session_id>')
@@ -364,6 +393,82 @@ def lyrics_endpoint():
     try:
         lrc = search_lyrics(title=title, artist=artist)
         return jsonify({'lrc': lrc or ''})
+    except Exception as e:
+        return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
+
+
+@app.route('/api/pitch_preview/<session_id>')
+def pitch_preview(session_id):
+    try:
+        semitones = float(request.args.get('semitones', '0'))
+        start_s = float(request.args.get('start', '0'))
+        dur_s = float(request.args.get('dur', '3'))
+        state = SESSIONS.get(session_id)
+        if not state:
+            return jsonify({'error': 'invalid session'}), 404
+        session_folder = state['folder']
+        sr = state['sample_rate']
+        # Try continuous full-length stems first (best UX)
+        # Prefer 'instrumental' when available to simulate karaoke backing
+        preferred = None
+        start_for_file = start_s
+        for name in ['instrumental', 'other', 'drums', 'bass']:
+            p = os.path.join(session_folder, f"{name}.wav")
+            if os.path.exists(p):
+                preferred = p
+                break
+
+        if preferred is None:
+            # Fall back to chunk-based preview: pick the right chunk near requested start time
+            ready = state.get('ready', {})
+            chunk_duration = float(state.get('chunk_duration', 5.0))
+            # Choose a stem with available chunks, preferring instrumental-like content
+            candidate_stems = []
+            for nm in ['instrumental', 'other', 'drums', 'bass', 'accompaniment']:
+                if nm in ready and ready[nm]:
+                    candidate_stems.append(nm)
+            if not candidate_stems:
+                # If no preferred stems, pick any stem present
+                for nm, idxs in ready.items():
+                    if idxs:
+                        candidate_stems.append(nm)
+                        break
+
+            if candidate_stems:
+                stem_name = candidate_stems[0]
+                desired_idx = max(0, int(start_s // max(0.001, chunk_duration)))
+                available = sorted(list(ready.get(stem_name, set())))
+                # Choose the nearest available chunk index to desired_idx
+                if available:
+                    idx = min(available, key=lambda i: abs(i - desired_idx))
+                else:
+                    idx = desired_idx
+                p = os.path.join(session_folder, f"chunk_{idx:03d}_{stem_name}.wav")
+                if os.path.exists(p):
+                    preferred = p
+                    base_time = idx * chunk_duration
+                    start_for_file = max(0.0, start_s - base_time)
+                else:
+                    preferred = None
+
+        if preferred is None:
+            # last resort: any wav in folder (will likely be a chunk; use local start=0)
+            for fn in os.listdir(session_folder):
+                if fn.lower().endswith('.wav'):
+                    preferred = os.path.join(session_folder, fn)
+                    start_for_file = 0.0
+                    break
+
+        if preferred is None:
+            return jsonify({'error': 'no audio available for preview'}), 400
+
+        audio_data, sample_rate = sf.read(preferred, always_2d=True)
+        if audio_data.shape[1] == 1:
+            audio_data = np.repeat(audio_data, 2, axis=1)
+        if audio_data.dtype != np.int16:
+            audio_data = (audio_data * 32767).astype(np.int16)
+        wav_bytes = pitch_shift_preview(audio_data, sample_rate, semitones, start_s=start_for_file, dur_s=dur_s)
+        return app.response_class(wav_bytes, mimetype='audio/wav')
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -479,7 +584,7 @@ if __name__ == '__main__':
     load_model_safe()
     cleanup_thread = threading.Thread(target=background_cleanup_task, daemon=True)
     cleanup_thread.start()
-    print('Started background cleanup task')
+    logging.info('Started background cleanup task')
     app.run(debug=True, host='0.0.0.0', port=5000)
 
 

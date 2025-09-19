@@ -1,5 +1,6 @@
 demucs
 torch
+torchaudio
 numpy
 soundfile
 pydub
