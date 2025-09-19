@@ -27,7 +27,6 @@ def _to_int16_numpy(wave: torch.Tensor) -> np.ndarray:
 
 def pitch_shift_preview(audio_i16: np.ndarray, sr: int, semitones: float,
                         start_s: float = 0.0, dur_s: float = 3.0) -> bytes:
-    print(f'Debug - Pitch shift preview called with semitones: {semitones}, start_s: {start_s}, dur_s: {dur_s}')
     """
     Create a short pitch-shifted preview snippet as WAV bytes using torchaudio.
 

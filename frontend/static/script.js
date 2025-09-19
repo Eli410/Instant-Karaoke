@@ -4,7 +4,10 @@ class InstantKaraokeApp {
         this.audioContext = null;
         this.audioBuffers = {};
         this.audioSources = {};
+        this.pendingSources = new Set(); // guard against duplicate/racy scheduling
         this.trackStates = {};
+        this._pitchEpoch = 0; // increment on each key change to cancel stale schedules
+        this._pendingStartTimer = null; // precise start timer for scheduled audio
         this.transport = {
             isPlaying: false,
             startTime: 0,
@@ -491,7 +494,7 @@ class InstantKaraokeApp {
             const stemData = stems[stemName];
             const audioUrl = this.buildPitchedUrl(`/api/audio/${session_id}/${stemData.filename}`);
             try {
-                const response = await fetch(audioUrl);
+                const response = await fetch(audioUrl, { cache: 'no-store' });
                 const arrayBuffer = await response.arrayBuffer();
                 const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
                 this.audioBuffers[stemName] = audioBuffer;
@@ -590,7 +593,7 @@ class InstantKaraokeApp {
 
     async loadContinuousStem(sessionId, stemName) {
         const url = this.buildPitchedUrl(`/api/audio/${sessionId}/${stemName}.wav`);
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: 'no-store' });
         const buf = await res.arrayBuffer();
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
         this.audioBuffers[stemName] = audioBuffer;
@@ -602,18 +605,27 @@ class InstantKaraokeApp {
         this.updateDurationLabels();
     }
 
-    async scheduleChunk(sessionId, stemName, chunkIndex) {
+    async scheduleChunk(sessionId, stemName, chunkIndex, epochOverride = null) {
         // Check if already scheduled to prevent duplicates
         const key = `${stemName}_${chunkIndex}`;
         if (this.audioSources[key]) {
             console.warn(`Chunk ${chunkIndex} for ${stemName} already scheduled`);
             return;
         }
+        // Prevent racy duplicate scheduling in parallel
+        const pendingKey = `P_${key}`;
+        if (this.pendingSources.has(pendingKey)) return;
+        this.pendingSources.add(pendingKey);
 
         const url = this.buildPitchedUrl(`/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`);
-        const res = await fetch(url);
+        // Capture current pitch epoch to invalidate stale results
+        const epoch = (epochOverride == null) ? (this._pitchEpoch || 0) : epochOverride;
+        const res = await fetch(url, { cache: 'no-store' });
         const buf = await res.arrayBuffer();
+        // If epoch changed while we fetched, abort quietly
+        if (epoch !== (this._pitchEpoch || 0)) { this.pendingSources.delete(pendingKey); return; }
         const audioBuffer = await this.audioContext.decodeAudioData(buf);
+        if (epoch !== (this._pitchEpoch || 0)) { this.pendingSources.delete(pendingKey); return; }
         const nameLower = (stemName || '').toLowerCase();
         const isVocal = nameLower.includes('voc') || nameLower.includes('vocal') || nameLower === 'vocals' || nameLower === 'sing' || nameLower === 'vocal';
         const defaultEnabled = this.isAdvanced ? true : !isVocal;
@@ -648,20 +660,50 @@ class InstantKaraokeApp {
             // Don't schedule if transport is paused/stopped
             return;
         }
-        const startAt = this.scheduler.startTime + (chunkIndex * this.scheduler.chunkDuration);
-        source.start(startAt);
+        // Compute planned start time aligned to transport, but avoid starting in the past
+        const plannedStart = this.scheduler.startTime + (chunkIndex * this.scheduler.chunkDuration);
+        const now = this.audioContext.currentTime;
+        const minLead = 0.02; // seconds
+        let when = plannedStart;
+        let srcOffset = 0;
+        if (when < now + minLead) {
+            // We are late; start ASAP with an offset so it stays in sync
+            srcOffset = Math.max(0, now - plannedStart);
+            // If the whole chunk duration already passed, skip scheduling
+            if (audioBuffer && srcOffset >= audioBuffer.duration - 0.005) {
+                this.pendingSources.delete(pendingKey);
+                return;
+            }
+            when = now + 0.005;
+        }
+        try {
+            if (srcOffset > 0) {
+                source.start(when, srcOffset);
+            } else {
+                source.start(when);
+            }
+        } catch (_) {
+            // Fallback: if start fails, skip this chunk
+            this.pendingSources.delete(pendingKey);
+            return;
+        }
         // Track source so we can stop on pause/stop
         this.audioSources[key] = source;
+        // Cleanup tracking when source ends
+        try { source.onended = () => { delete this.audioSources[key]; }; } catch (_) {}
+        this.pendingSources.delete(pendingKey);
         // Update duration based on highest scheduled chunk index
         this.transport.duration = Math.max(this.transport.duration, (chunkIndex + 1) * this.scheduler.chunkDuration);
         this.updateDurationLabels();
         this.updateMasterAutoGain();
     }
 
-    async rescheduleChunksFromTime(resumeTime) {
+    async rescheduleChunksFromTime(resumeTime, epochOverride = null) {
         const sessionId = this.currentSession.session_id;
         const resumeChunkIndex = Math.floor(resumeTime / this.scheduler.chunkDuration);
         const offsetInChunk = resumeTime % this.scheduler.chunkDuration;
+        const epoch = (epochOverride == null) ? (this._pitchEpoch || 0) : epochOverride;
+        let earliestStart = Infinity;
         
         // For each stem, reschedule chunks starting from resumeChunkIndex
         for (const [stemName, stemState] of Object.entries(this.scheduler.perStem)) {
@@ -675,9 +717,11 @@ class InstantKaraokeApp {
                 
                 try {
                     const url = this.buildPitchedUrl(`/api/audio/${sessionId}/chunk_${String(chunkIndex).padStart(3, '0')}_${stemName}.wav`);
-                    const res = await fetch(url);
+                    const res = await fetch(url, { cache: 'no-store' });
                     const buf = await res.arrayBuffer();
+                    if (epoch !== (this._pitchEpoch || 0)) { continue; }
                     const audioBuffer = await this.audioContext.decodeAudioData(buf);
+                    if (epoch !== (this._pitchEpoch || 0)) { continue; }
                     
                     const state = this.trackStates[stemName];
                     if (!state || !state.gainNode) continue;
@@ -686,23 +730,40 @@ class InstantKaraokeApp {
                     source.buffer = audioBuffer;
                     source.connect(state.gainNode);
                     
-                    // Start time for this chunk, accounting for resume offset
+                    // Start time for this chunk, accounting for resume offset and late scheduling
                     let startTime = this.scheduler.startTime + (chunkIndex * this.scheduler.chunkDuration);
                     let sourceOffset = 0;
-                    
                     if (chunkIndex === resumeChunkIndex) {
                         // First chunk after resume - start with offset
                         sourceOffset = offsetInChunk;
                     }
-                    
-                    source.start(startTime, sourceOffset);
+                    // If we are behind schedule, add additional offset so playback stays in sync
+                    const now = this.audioContext.currentTime;
+                    const minLead = 0.02; // seconds
+                    if (startTime < now + minLead) {
+                        const extra = Math.max(0, now - startTime);
+                        sourceOffset += extra;
+                        startTime = now + 0.005;
+                    }
+                    // Skip if offset exceeds buffer duration
+                    if (audioBuffer && sourceOffset >= audioBuffer.duration - 0.005) {
+                        continue;
+                    }
+                    try {
+                        source.start(startTime, sourceOffset);
+                    } catch (_) {
+                        continue;
+                    }
+                    if (startTime < earliestStart) earliestStart = startTime;
                     this.audioSources[key] = source;
+                    try { source.onended = () => { delete this.audioSources[key]; }; } catch (_) {}
                     stemState.scheduled.add(chunkIndex);
                 } catch (e) {
                     console.warn(`Failed to reschedule chunk ${chunkIndex} for ${stemName}`);
                 }
             }
         }
+        return Number.isFinite(earliestStart) ? earliestStart : null;
     }
 
     async resumeChunkScheduling() {
@@ -967,26 +1028,80 @@ class InstantKaraokeApp {
         // Reload audio via pitched endpoint and resume
         const resumeAt = this.getCurrentTime();
         const wasPlaying = this.transport.isPlaying;
+        // Increment pitch epoch to invalidate any in-flight schedules for old pitch
+        this._pitchEpoch = (this._pitchEpoch || 0) + 1;
+        const epoch = this._pitchEpoch;
         this.stopAll();
-        if (this.scheduler.usingChunks) {
-            this.audioSources = {};
-            this.transport.pausedAt = resumeAt;
-            if (wasPlaying) this.togglePlayPause(); else this.updatePlayPauseUI();
-        } else {
-            const sessionId = this.currentSession.session_id;
-            const stemNames = Object.keys(this.audioBuffers);
+        // Clear any pending schedule keys
+        if (this.pendingSources) this.pendingSources.clear();
+        this.audioSources = {};
+        const sessionId = (this.currentSession && this.currentSession.session_id) || null;
+        const reloadContinuous = !!this.scheduler.continuousLoaded;
+        if (reloadContinuous && sessionId) {
+            // Force continuous mode and reload all stems pitched BEFORE resuming to avoid mixed pitch
+            this.scheduler.usingChunks = false;
+            const stemNames = Object.keys(this.trackStates || {});
             Promise.all(stemNames.map(name => this.loadContinuousStem(sessionId, name))).then(() => {
-                if (!wasPlaying) {
-                    this.transport.pausedAt = resumeAt;
-                    this.updatePlayPauseUI();
-                } else {
-                    this.transport.pausedAt = resumeAt;
+                this.transport.pausedAt = resumeAt;
+                if (wasPlaying) {
                     if (!this.transport.isPlaying) this.togglePlayPause();
+                } else {
+                    this.updatePlayPauseUI();
                 }
             }).catch(() => {
                 this.transport.pausedAt = resumeAt;
                 this.updatePlayPauseUI();
             });
+        } else {
+            // Chunk mode: clear and wait for pitch-shifted chunks before resuming playback
+            this.scheduler.usingChunks = true;
+            this.scheduler.shouldAutoStart = false; // prevent auto-start with stale buffers
+            const resumeChunkIndex = Math.floor(resumeAt / this.scheduler.chunkDuration);
+            const offsetInChunk = resumeAt % this.scheduler.chunkDuration;
+
+            // Reset per-stem scheduling state to the resume point
+            const stems = Object.keys(this.scheduler.perStem || {});
+            stems.forEach((stemName) => {
+                const state = this.scheduler.perStem[stemName] || { nextIndex: 0, scheduled: new Set() };
+                state.nextIndex = resumeChunkIndex + 1; // ensure first resume chunk gets (re)scheduled
+                if (state.scheduled) state.scheduled.clear(); else state.scheduled = new Set();
+                this.scheduler.perStem[stemName] = state;
+            });
+
+            this.transport.pausedAt = resumeAt;
+
+            if (wasPlaying) {
+                // Pre-schedule first pitched chunk(s) at the correct resume time, then start transport
+                const now = this.audioContext.currentTime + 0.25;
+                this.scheduler.startTime = now - (resumeChunkIndex * this.scheduler.chunkDuration) - offsetInChunk;
+                // Schedule the first available chunks using pitched endpoint with proper offsets
+                this.rescheduleChunksFromTime(resumeAt, epoch).then((firstStartAt) => {
+                    // If a precise first start time is available, align transport exactly
+                    const plannedStart = (typeof firstStartAt === 'number' && isFinite(firstStartAt)) ? firstStartAt : now;
+                    const delayMs = Math.max(0, (plannedStart - this.audioContext.currentTime) * 1000 - 2);
+                    // Clear any previous pending precise start
+                    if (this._pendingStartTimer) { try { clearTimeout(this._pendingStartTimer); } catch (_) {} this._pendingStartTimer = null; }
+                    this._pendingStartTimer = setTimeout(() => {
+                        // Avoid starting if paused/stopped in the meantime
+                        if (!this.currentSession || this._pitchEpoch !== epoch) return;
+                        this.transport.isPlaying = true;
+                        // Ensure transport timeline matches the scheduled chunks
+                        this.transport.startTime = plannedStart - this.transport.pausedAt;
+                        this.updatePlayPauseUI();
+                        this.startTransportTicker();
+                        this.resumeChunkScheduling();
+                        this.hideProcessingProgress();
+                        this.syncMediaStart(plannedStart, this.transport.pausedAt);
+                        this._pendingStartTimer = null;
+                    }, Math.max(0, delayMs));
+                }).catch(() => {
+                    // If scheduling fails, stay paused but update UI
+                    this.updatePlayPauseUI();
+                });
+            } else {
+                // Stay paused; playback will use pitched endpoints when started later
+                this.updatePlayPauseUI();
+            }
         }
     }
 
@@ -1111,8 +1226,15 @@ class InstantKaraokeApp {
             this.updatePlayPauseUI();
             this.startTransportTicker();
             
-            // If using chunk-based playback, restart scheduler
-            if (this.scheduler.usingChunks) {
+            // Prefer continuous resume if full stems are available to avoid desync
+            if (this.scheduler.continuousLoaded) {
+                this.scheduler.usingChunks = false;
+                for (const source of Object.values(this.audioSources)) {
+                    try { source.stop(); } catch (_) {}
+                }
+                this.audioSources = {};
+                this.startContinuousPlayback(this.transport.pausedAt);
+            } else if (this.scheduler.usingChunks) {
                 const resumeChunkIndex = Math.floor(this.transport.pausedAt / this.scheduler.chunkDuration);
                 const offsetInChunk = this.transport.pausedAt % this.scheduler.chunkDuration;
                 this.scheduler.startTime = now - (resumeChunkIndex * this.scheduler.chunkDuration) - offsetInChunk;
@@ -1137,6 +1259,7 @@ class InstantKaraokeApp {
             this.transport.isPlaying = false;
             this.transport.tickerRunning = false; // Stop the progress ticker
             this.updatePlayPauseUI();
+            if (this._pendingStartTimer) { try { clearTimeout(this._pendingStartTimer); } catch (_) {} this._pendingStartTimer = null; }
             
             // Stop all sources but keep transport state and scheduled tracking for resume
             for (const source of Object.values(this.audioSources)) {
@@ -1146,6 +1269,7 @@ class InstantKaraokeApp {
                     // Source might already be stopped
                 }
             }
+        if (this.pendingSources) this.pendingSources.clear();
             this.audioSources = {};
             // Note: Keep scheduled tracking intact for resume
             // Pause media video if present
@@ -1171,9 +1295,21 @@ class InstantKaraokeApp {
                 return;
             }
             const t = this.getCurrentTime();
-            currentLabel.textContent = this.formatTime(t);
-            if (this.transport.duration > 0) {
-                seekSlider.value = Math.min(100, (t / this.transport.duration) * 100);
+            // If we reached or passed the end, clamp and end playback
+            if (this.transport.duration > 0 && t >= this.transport.duration - 0.02) {
+                const clamped = this.transport.duration;
+                currentLabel.textContent = this.formatTime(clamped);
+                seekSlider.value = 100;
+                // Final lyric/overlay update at end position
+                try { this.updateLyricsAtTime(clamped); } catch (_) {}
+                try { this.updateKaraokeOverlay(this.lyrics.activeIndex); } catch (_) {}
+                this.onPlaybackEnded();
+                return;
+            } else {
+                currentLabel.textContent = this.formatTime(t);
+                if (this.transport.duration > 0) {
+                    seekSlider.value = Math.min(100, (t / this.transport.duration) * 100);
+                }
             }
             this.updateLyricsAtTime(t);
             // Keep media element in sync with audio clock
@@ -1183,6 +1319,25 @@ class InstantKaraokeApp {
             requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
+    }
+
+    onPlaybackEnded() {
+        // Stop ticker and mark transport at end
+        this.transport.isPlaying = false;
+        this.transport.tickerRunning = false;
+        this.transport.pausedAt = this.transport.duration;
+        this.updatePlayPauseUI();
+        // Stop any remaining sources
+        for (const source of Object.values(this.audioSources)) {
+            try { source.stop(); } catch (_) {}
+        }
+        this.audioSources = {};
+        // Pause media element at end
+        const video = document.querySelector('#mediaWrapper video');
+        if (video) {
+            try { video.pause(); } catch (_) {}
+            try { video.currentTime = Math.max(0, this.transport.duration); } catch (_) {}
+        }
     }
 
     updateDurationLabels() {
@@ -1233,8 +1388,20 @@ class InstantKaraokeApp {
             this.transport.pausedAt = newTime;
             if (this.transport.isPlaying) {
                 // Pause then resume from new position
-                this.togglePlayPause();
-                this.togglePlayPause();
+                this.transport.isPlaying = false;
+                this.transport.tickerRunning = false;
+                for (const source of Object.values(this.audioSources)) { try { source.stop(); } catch (_) {} }
+                this.audioSources = {};
+                const resumeChunkIndex = Math.floor(this.transport.pausedAt / this.scheduler.chunkDuration);
+                const offsetInChunk = this.transport.pausedAt % this.scheduler.chunkDuration;
+                const now = this.audioContext.currentTime + 0.05;
+                this.transport.startTime = now - this.transport.pausedAt;
+                this.transport.isPlaying = true;
+                this.updatePlayPauseUI();
+                this.startTransportTicker();
+                this.scheduler.startTime = now - (resumeChunkIndex * this.scheduler.chunkDuration) - offsetInChunk;
+                this.rescheduleChunksFromTime(this.transport.pausedAt);
+                this.resumeChunkScheduling();
             }
         }
         // Sync media element currentTime
@@ -1290,6 +1457,8 @@ class InstantKaraokeApp {
             }
         }
         this.audioSources = {};
+        if (this.pendingSources) this.pendingSources.clear();
+        if (this._pendingStartTimer) { try { clearTimeout(this._pendingStartTimer); } catch (_) {} this._pendingStartTimer = null; }
         
         // Clear scheduled tracking for all stems
         for (const stemState of Object.values(this.scheduler.perStem)) {
