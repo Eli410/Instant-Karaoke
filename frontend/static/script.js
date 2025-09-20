@@ -15,6 +15,7 @@ class InstantKaraokeApp {
             duration: 0,
             tickerRunning: false,
         };
+        this._playerWidthRaf = null;
         // Track the active session for polling cancellation/race avoidance
         this.activeSessionId = null;
         this.scheduler = {
@@ -34,6 +35,7 @@ class InstantKaraokeApp {
         this.initializeEventListeners();
         this.initializeAudioContext();
         this.initializeLyrics();
+        this.initializeThemeToggle();
         
         // Initialize key offset display
         this.updateKeyOffsetDisplay();
@@ -207,6 +209,41 @@ class InstantKaraokeApp {
             wordLevelEnabled: true,
         };
         this.lyricsContainer = document.getElementById('lyricsContainer');
+    }
+
+    initializeThemeToggle() {
+        const toggle = document.getElementById('themeToggle');
+        if (!toggle) {
+            return;
+        }
+        const saved = (() => {
+            try {
+                return localStorage.getItem('instant-karaoke-theme');
+            } catch (_) {
+                return null;
+            }
+        })();
+        const initial = saved === 'future' ? 'future' : 'classic';
+        this.applyThemeMode(initial, toggle);
+        toggle.addEventListener('click', () => {
+            const nextMode = document.body.classList.contains('theme-future') ? 'classic' : 'future';
+            this.applyThemeMode(nextMode, toggle);
+            try {
+                localStorage.setItem('instant-karaoke-theme', nextMode);
+            } catch (_) {
+                /* ignore storage errors */
+            }
+            toggle.blur();
+        });
+    }
+
+    applyThemeMode(mode, toggleEl) {
+        const isFuture = mode === 'future';
+        document.body.classList.toggle('theme-future', isFuture);
+        if (!toggleEl) return;
+        toggleEl.setAttribute('aria-pressed', String(isFuture));
+        toggleEl.classList.toggle('is-active', isFuture);
+        toggleEl.textContent = isFuture ? 'Return to Classic' : 'Activate Neon Grid';
     }
 
     async handleLyricsFileSelect(event) {
@@ -1720,11 +1757,15 @@ class InstantKaraokeApp {
                     card.style.opacity = '';
                 }
             });
+            const hasThumb = !!(thumbUrl && thumbUrl.trim());
+            const thumbMarkup = hasThumb
+                ? `<img src="${this.escapeAttribute(thumbUrl)}" alt="${this.escapeAttribute(title)}" loading="lazy"/>`
+                : `<span class="thumb-icon"><i class="fas fa-music"></i></span>`;
             card.innerHTML = `
-                <div class=\"thumb\">
-                    <img src=\"${this.escapeAttribute(thumbUrl)}\" alt=\"${this.escapeAttribute(title)}\" loading=\"lazy\"/>
+                <div class="thumb${hasThumb ? '' : ' missing'}">
+                    ${thumbMarkup}
                 </div>
-                <div class=\"meta\">
+                <div class="meta">
                     <div class=\"title\" title=\"${this.escapeAttribute(title)}\">${this.escapeHtml(title)}</div>
                     <div class=\"sub\">${this.escapeHtml(subText)}</div>
                 </div>
@@ -1792,6 +1833,7 @@ class InstantKaraokeApp {
         const hasImage = !!thumbnail;
         if (!hasVideo && !hasImage) {
             pane.style.display = 'none';
+            this.schedulePlayerWidthUpdate();
             return;
         }
         pane.style.display = '';
@@ -1816,6 +1858,10 @@ class InstantKaraokeApp {
             // Disable backdrop blur on videos to avoid GPU bugs in some browsers
             const overlay = wrapper.querySelector('.karaoke-overlay');
             if (overlay) overlay.classList.add('no-blur');
+            const finalize = () => this.schedulePlayerWidthUpdate();
+            video.addEventListener('loadedmetadata', finalize, { once: true });
+            video.addEventListener('loadeddata', finalize, { once: true });
+            if (video.readyState >= 1) finalize();
         } else if (hasImage) {
             const img = document.createElement('img');
             img.alt = 'Cover image';
@@ -1825,7 +1871,32 @@ class InstantKaraokeApp {
             this.ensureKaraokeOverlay(wrapper);
             const overlay = wrapper.querySelector('.karaoke-overlay');
             if (overlay) overlay.classList.remove('no-blur');
+            if (img.complete) {
+                this.schedulePlayerWidthUpdate();
+            } else {
+                img.addEventListener('load', () => this.schedulePlayerWidthUpdate(), { once: true });
+                img.addEventListener('error', () => this.schedulePlayerWidthUpdate(), { once: true });
+            }
         }
+        this.schedulePlayerWidthUpdate();
+    }
+
+    schedulePlayerWidthUpdate() {
+        if (this._playerWidthRaf) {
+            cancelAnimationFrame(this._playerWidthRaf);
+        }
+        this._playerWidthRaf = requestAnimationFrame(() => {
+            this._playerWidthRaf = null;
+            this.updatePlayerWidthToMedia();
+        });
+    }
+
+    updatePlayerWidthToMedia() {
+        const section = document.getElementById('playerSection');
+        const wrapper = document.getElementById('mediaWrapper');
+        if (!section || !wrapper) return;
+        section.style.width = '';
+        section.style.width = '';
     }
 
     syncMediaStart(startAtAudioCtx, offsetSeconds) {
