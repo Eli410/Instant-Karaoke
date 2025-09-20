@@ -35,8 +35,7 @@ class InstantKaraokeApp {
         this.initializeEventListeners();
         this.initializeAudioContext();
         this.initializeLyrics();
-        this.initializeThemeToggle();
-        
+
         // Initialize key offset display
         this.updateKeyOffsetDisplay();
     }
@@ -209,41 +208,6 @@ class InstantKaraokeApp {
             wordLevelEnabled: true,
         };
         this.lyricsContainer = document.getElementById('lyricsContainer');
-    }
-
-    initializeThemeToggle() {
-        const toggle = document.getElementById('themeToggle');
-        if (!toggle) {
-            return;
-        }
-        const saved = (() => {
-            try {
-                return localStorage.getItem('instant-karaoke-theme');
-            } catch (_) {
-                return null;
-            }
-        })();
-        const initial = saved === 'future' ? 'future' : 'classic';
-        this.applyThemeMode(initial, toggle);
-        toggle.addEventListener('click', () => {
-            const nextMode = document.body.classList.contains('theme-future') ? 'classic' : 'future';
-            this.applyThemeMode(nextMode, toggle);
-            try {
-                localStorage.setItem('instant-karaoke-theme', nextMode);
-            } catch (_) {
-                /* ignore storage errors */
-            }
-            toggle.blur();
-        });
-    }
-
-    applyThemeMode(mode, toggleEl) {
-        const isFuture = mode === 'future';
-        document.body.classList.toggle('theme-future', isFuture);
-        if (!toggleEl) return;
-        toggleEl.setAttribute('aria-pressed', String(isFuture));
-        toggleEl.classList.toggle('is-active', isFuture);
-        toggleEl.textContent = isFuture ? 'Return to Classic' : 'Activate Neon Grid';
     }
 
     async handleLyricsFileSelect(event) {
