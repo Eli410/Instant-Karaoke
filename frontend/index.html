@@ -10,54 +10,65 @@
 <body>
     <div class="container">
         <header>
-            <h1><i class="fas fa-music"></i> Instant Karaoke</h1>
+            <div class="header-top">
+                <h1><i class="fas fa-music"></i> Instant Karaoke</h1>
+                <button class="theme-toggle" id="themeToggle" type="button" aria-pressed="false">
+                    Activate Neon Grid
+                </button>
+            </div>
             <p>AI-powered karaoke with stem separation, synchronized lyrics, and individual track control</p>
         </header>
 
         <main>
-            
+            <div class="app-layout">
+                <div class="app-left" id="appLeftColumn">
+                    <div class="search-panel">
+                        <div class="tabs">
+                            <button class="tab active" data-target="youtubeSection"><i class="fab fa-youtube"></i> YouTube</button>
+                            <button class="tab" data-target="uploadSection"><i class="fas fa-upload"></i> Upload</button>
+                        </div>
 
-            <div class="tabs">
-                <button class="tab active" data-target="youtubeSection"><i class="fab fa-youtube"></i> YouTube</button>
-                <button class="tab" data-target="uploadSection"><i class="fas fa-upload"></i> Upload</button>
-            </div>
+                        <!-- YouTube Section -->
+                        <section class="youtube-section" id="youtubeSection" style="display: block;">
+                            <div class="search-bar">
+                                <input type="text" id="youtubeSearchInput" placeholder="Search YouTube for a song or paste a URL">
+                                <button class="search-btn" id="youtubeSearchBtn" type="button" aria-label="Search">
+                                    <i class="fas fa-search"></i>
+                                </button>
+                            </div>
+                            <div class="youtube-results" id="youtubeResults">
+                                <div class="placeholder"><i class="fas fa-info-circle"></i> Enter a query to search YouTube.</div>
+                            </div>
+                        </section>
 
-            <!-- YouTube Section -->
-            <section class="youtube-section" id="youtubeSection" style="display: block;">
-                <div class="search-bar">
-                    <input type="text" id="youtubeSearchInput" placeholder="Search YouTube for a song or paste a URL">
-                    <button class="upload-btn" id="youtubeSearchBtn"><i class="fas fa-search"></i> Search</button>
-                </div>
-                <div class="youtube-results" id="youtubeResults">
-                    <div class="placeholder"><i class="fas fa-info-circle"></i> Enter a query to search YouTube.</div>
-                </div>
-            </section>
-            <!-- Upload Section -->
-            <section class="upload-section" id="uploadSection" style="display: none;">
-                <div class="upload-area" id="uploadArea">
-                    <div class="upload-content">
-                        <i class="fas fa-cloud-upload-alt"></i>
-                        <h3>Upload Audio File</h3>
-                        <p>Drag and drop your audio file here or click to browse</p>
-                        <p class="file-types">Supported: WAV, MP3, FLAC, M4A, OGG</p>
-                        <input type="file" id="fileInput" accept=".wav,.mp3,.flac,.m4a,.ogg" hidden>
-                        <button class="upload-btn" id="chooseFileBtn">Choose File</button>
+                        <!-- Upload Section -->
+                        <section class="upload-section" id="uploadSection" style="display: none;">
+                            <div class="upload-area" id="uploadArea">
+                                <div class="upload-content">
+                                    <i class="fas fa-cloud-upload-alt"></i>
+                                    <h3>Upload Audio File</h3>
+                                    <p>Drag and drop your audio file here or click to browse</p>
+                                    <p class="file-types">Supported: WAV, MP3, FLAC, M4A, OGG</p>
+                                    <input type="file" id="fileInput" accept=".wav,.mp3,.flac,.m4a,.ogg" hidden>
+                                    <button class="upload-btn" id="chooseFileBtn">Choose File</button>
+                                </div>
+                            </div>
+                            
+                            <div class="upload-progress" id="uploadProgress" style="display: none;">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="progressFill"></div>
+                                </div>
+                                <p id="progressText">Uploading...</p>
+                            </div>
+                        </section>
                     </div>
                 </div>
-                
-                <div class="upload-progress" id="uploadProgress" style="display: none;">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progressFill"></div>
-                    </div>
-                    <p id="progressText">Uploading...</p>
-                </div>
-            </section>
-            
-            <!-- Player Section (moved below tabs and sections) -->
-            <section class="player-section" id="playerSection" style="display: block; position: relative;">
-                <div class="player-header">
-                    <div class="player-title">
-                        <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
+
+                <!-- Player Section (moved alongside search panel) -->
+                <section class="player-section" id="playerSection" style="display: block; position: relative;">
+                    <div class="player-header">
+                        <div class="player-title">
+                            <h3><i class="fas fa-play-circle"></i> Audio Player</h3>
                         <form class="refine-search" id="refineSearchForm">
                             <input type="text" id="refineArtistInput" placeholder="Artist" />
                             <input type="text" id="refineTitleInput" placeholder="Song title" />
@@ -88,12 +99,19 @@
                     <div class="player-controls" id="playerControls" style="display: none;">
                         <div class="transport-controls">
                             <div class="transport-buttons">
-                                <button id="playPauseBtn" class="control-btn" type="button">Play</button>
-                                <button id="stopAllBtn" class="control-btn" type="button">Stop</button>
+                                <div class="transport-primary">
+                                    <button id="playPauseBtn" class="control-btn" type="button">Play</button>
+                                    <button id="stopAllBtn" class="control-btn" type="button">Stop</button>
+                                </div>
                                 <div class="key-change-controls">
                                     <button id="keyDownBtn" class="control-btn key-btn" type="button" title="Lower key by half step">♭</button>
                                     <span id="keyOffsetDisplay" class="key-offset">Key: 0</span>
                                     <button id="keyUpBtn" class="control-btn key-btn" type="button" title="Raise key by half step">♯</button>
+                                </div>
+                                <div class="lyrics-offset-controls" id="lyricsOffsetControls">
+                                    <button id="lyricsOffsetMinus" class="control-btn" title="Shift lyrics earlier by 0.5s">-0.5s</button>
+                                    <span id="lyricsOffsetValue">0.0s</span>
+                                    <button id="lyricsOffsetPlus" class="control-btn" title="Shift lyrics later by 0.5s">+0.5s</button>
                                 </div>
                             </div>
                             <div class="transport-progress">
@@ -111,21 +129,20 @@
                             <!-- Video or cover image will render here -->
                         </div>
                     </div>
-                    <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
-                        <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics
-                            <div id="lyricsOffsetControls" style="float:right; display:flex; align-items:center; gap:8px;">
-                                <input type="file" id="lyricsFileInput" accept=".lrc" hidden>
-                                <button id="uploadLyricsBtn" class="control-btn" title="Upload .lrc lyrics file">Upload Lyrics</button>
-                                <button id="lyricsOffsetMinus" class="control-btn" title="Shift lyrics earlier by 0.5s">-0.5s</button>
-                                <span id="lyricsOffsetValue">0.0s</span>
-                                <button id="lyricsOffsetPlus" class="control-btn" title="Shift lyrics later by 0.5s">+0.5s</button>
-                            </div>
-                        </div>
-                        <div class="lyrics-content" id="lyricsContainer"></div>
-                    </aside>
                 </div>
-            </section>
-            
+                </section>
+
+                <aside class="lyrics-pane" id="lyricsPane" style="display: none;">
+                    <div class="lyrics-header"><i class="fas fa-microphone-alt"></i> Lyrics
+                        <div class="lyrics-actions">
+                            <input type="file" id="lyricsFileInput" accept=".lrc" hidden>
+                            <button id="uploadLyricsBtn" class="control-btn" title="Upload .lrc lyrics file">Upload Lyrics</button>
+                        </div>
+                    </div>
+                    <div class="lyrics-content" id="lyricsContainer"></div>
+                </aside>
+            </div>
+
         </main>
 
         <!-- Error Modal -->

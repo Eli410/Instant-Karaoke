@@ -2,7 +2,6 @@ import io
 import subprocess
 import numpy as np
 import torch
-import torchaudio
 import soundfile as sf
 
 
@@ -28,7 +27,7 @@ def _to_int16_numpy(wave: torch.Tensor) -> np.ndarray:
 def pitch_shift_preview(audio_i16: np.ndarray, sr: int, semitones: float,
                         start_s: float = 0.0, dur_s: float = 3.0) -> bytes:
     """
-    Create a short pitch-shifted preview snippet as WAV bytes using torchaudio.
+    Create a short pitch-shifted preview snippet as WAV bytes using ffmpeg.
 
     Parameters
     ----------
@@ -59,7 +58,7 @@ def pitch_shift_preview(audio_i16: np.ndarray, sr: int, semitones: float,
     clip = audio_i16[n0:n1]
     wave = _to_tensor_int16_stereo(clip)
 
-    def _fallback_ffmpeg_pitch_shift(clip_i16: np.ndarray, sample_rate: int, n_steps: float) -> np.ndarray:
+    def _ffmpeg_pitch_shift(clip_i16: np.ndarray, sample_rate: int, n_steps: float) -> np.ndarray:
         try:
             factor = float(2.0 ** (n_steps / 12.0))
             # Compose ffmpeg filter chain: pitch shift by asetrate, then restore duration with atempo
@@ -95,31 +94,14 @@ def pitch_shift_preview(audio_i16: np.ndarray, sr: int, semitones: float,
                 y_i16 = np.vstack([y_i16, pad])
             return y_i16
         except Exception as ee:
-            print(f'Debug - FFmpeg pitch shift fallback failed: {ee}')
+            print(f'Debug - FFmpeg pitch shift failed: {ee}')
             return clip_i16
 
     try:
         if abs(float(semitones)) < 1e-6:
             out_i16 = clip
         else:
-            # Prefer ffmpeg path for reliable, audible shifting
-            out_i16 = _fallback_ffmpeg_pitch_shift(clip, sr, float(semitones))
-            # If ffmpeg failed to change anything (unlikely), attempt torchaudio paths
-            if out_i16 is clip or out_i16.shape[0] == 0:
-                if hasattr(torchaudio.transforms, "PitchShift"):
-                    transform = torchaudio.transforms.PitchShift(sample_rate=sr, n_steps=float(semitones))
-                    shifted = transform(wave).detach()
-                    out_i16 = _to_int16_numpy(shifted)
-                else:
-                    try:
-                        from torchaudio.sox_effects import apply_effects_tensor
-                        cents = 100.0 * float(semitones)
-                        effects = [["pitch", f"{cents}"], ["rate", f"{sr}"]]
-                        shifted, _ = apply_effects_tensor(wave, sr, effects)
-                        shifted = shifted.detach()
-                        out_i16 = _to_int16_numpy(shifted)
-                    except Exception:
-                        pass
+            out_i16 = _ffmpeg_pitch_shift(clip, sr, float(semitones))
     except Exception as e:
         print(f'Debug - Pitch shift preview failed: {e}')
         out_i16 = clip
