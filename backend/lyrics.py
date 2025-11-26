@@ -79,6 +79,6 @@ def search_lyrics(title, artist, enhanced=True, providers=None):
 
 
 if __name__ == "__main__":
-    lrc = search_lyrics("shallow", "lady gaga")
+    lrc = search_lyrics("Hotel California (Live 1976)", "Eagles")
     print(lrc)
 

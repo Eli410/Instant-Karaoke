@@ -16,6 +16,17 @@ class InstantKaraokeApp {
             tickerRunning: false,
         };
         this._playerWidthRaf = null;
+        this.overlaySizeCache = new WeakMap();
+        this.overlayResizeObserver = (typeof ResizeObserver !== 'undefined')
+            ? new ResizeObserver((entries) => {
+                for (const entry of entries) {
+                    if (entry && entry.target) {
+                        this.updateKaraokeOverlaySizing(entry.target);
+                    }
+                }
+            })
+            : null;
+        this.overlayInstanceCounter = 0;
         // Track the active session for polling cancellation/race avoidance
         this.activeSessionId = null;
         this.scheduler = {
@@ -115,6 +126,10 @@ class InstantKaraokeApp {
                 if (lyricsFileInput) lyricsFileInput.click();
             });
             lyricsFileInput.addEventListener('change', (e) => this.handleLyricsFileSelect(e));
+        }
+
+        if (typeof window !== 'undefined') {
+            window.addEventListener('resize', () => this.schedulePlayerWidthUpdate());
         }
     }
 
@@ -1545,30 +1560,96 @@ class InstantKaraokeApp {
     setupYouTubeSearch() {
         const searchBtn = document.getElementById('youtubeSearchBtn');
         const searchInput = document.getElementById('youtubeSearchInput');
-        const results = document.getElementById('youtubeResults');
-        if (!searchBtn || !searchInput || !results) return;
+        const tabsContainer = document.getElementById('youtubeResultsTabs');
+        const placeholder = document.getElementById('youtubeResultsPlaceholder');
+        const songsPanel = document.getElementById('youtubeSongsResults');
+        const videosPanel = document.getElementById('youtubeVideosResults');
+        const tabs = Array.from(document.querySelectorAll('.yt-results-tab'));
+        if (!searchBtn || !searchInput || !tabsContainer || !placeholder || !songsPanel || !videosPanel) return;
+
+        const tabMap = {};
+        tabs.forEach((tab) => {
+            const target = tab.getAttribute('data-target');
+            if (target) tabMap[target] = tab;
+        });
+
+        const activateTab = (panelId) => {
+            if (!panelId) return;
+            tabs.forEach((tab) => {
+                const target = tab.getAttribute('data-target');
+                const isActive = target === panelId;
+                tab.classList.toggle('active', isActive);
+            });
+            [songsPanel, videosPanel].forEach((panel) => {
+                if (!panel) return;
+                const isActive = panel.id === panelId;
+                panel.classList.toggle('active', isActive);
+                if (isActive) panel.removeAttribute('hidden'); else panel.setAttribute('hidden', '');
+            });
+        };
+
+        tabs.forEach((tab) => {
+            tab.addEventListener('click', () => {
+                if (tab.disabled) return;
+                const target = tab.getAttribute('data-target');
+                activateTab(target);
+            });
+        });
+
+        const resetPanels = () => {
+            [songsPanel, videosPanel].forEach((panel) => {
+                if (!panel) return;
+                panel.innerHTML = '';
+                panel.classList.remove('active');
+                panel.setAttribute('hidden', '');
+            });
+        };
+
+        const showPlaceholder = (html) => {
+            resetPanels();
+            tabs.forEach((tab) => tab.classList.remove('active'));
+            placeholder.innerHTML = html;
+            placeholder.style.display = 'block';
+            tabsContainer.style.display = 'none';
+        };
+
+        const showTabs = () => {
+            placeholder.style.display = 'none';
+            tabsContainer.style.display = 'flex';
+        };
+
+        this.youtubeUI = {
+            tabsContainer,
+            placeholder,
+            songsPanel,
+            videosPanel,
+            tabs,
+            tabMap,
+            activateTab,
+            showPlaceholder,
+            showTabs,
+            resetPanels,
+        };
 
         const triggerSearch = async () => {
             const query = (searchInput.value || '').trim();
-            results.innerHTML = '';
-            const placeholder = document.createElement('div');
-            placeholder.className = 'placeholder';
+            if (!this.youtubeUI) return;
             if (query.length === 0) {
-                placeholder.innerHTML = '<i class="fas fa-info-circle"></i> Enter a query to search YouTube.';
-                results.appendChild(placeholder);
+                this.youtubeUI.showPlaceholder('<i class="fas fa-info-circle"></i> Enter a query to search YouTube.');
                 return;
             }
             // If the query looks like a YouTube URL or raw ID, start that video directly
             const directId = this.parseYouTubeVideoId(query);
             if (directId) {
-                placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Loading video...`;
-                results.appendChild(placeholder);
+                this.youtubeUI.showPlaceholder('<i class="fas fa-spinner fa-spin"></i> Loading video...');
                 try {
-                    // If a session is active, confirm replacement and reset like card click handler
                     const hasActiveSession = !!this.currentSession || this.transport.isPlaying || Object.keys(this.audioSources || {}).length > 0;
                     if (hasActiveSession) {
                         const ok = window.confirm('A song is currently loaded. Replace it with the new selection?');
-                        if (!ok) { results.innerHTML = ''; return; }
+                        if (!ok) {
+                            this.youtubeUI.showPlaceholder('<i class="fas fa-info-circle"></i> Enter a query to search YouTube.');
+                            return;
+                        }
                         this.stopAll();
                         if (this.activeSessionId) {
                             try { await fetch(`/api/cleanup/${encodeURIComponent(this.activeSessionId)}`, { method: 'POST' }); } catch (_) {}
@@ -1577,7 +1658,6 @@ class InstantKaraokeApp {
                         this.audioBuffers = {};
                         this.audioSources = {};
                         this.trackStates = {};
-                        // Reset key offset
                         this.keyOffset = 0;
                         this.pitchRatio = 1.0;
                         this.updateKeyOffsetDisplay();
@@ -1597,18 +1677,16 @@ class InstantKaraokeApp {
                         if (totalLabel) totalLabel.textContent = '0:00';
                     }
                     let meta = { title: '', artist: '' };
-                    try { meta = await this.fetchVideoMetadata(directId); } catch (_) { /* ignore */ }
+                    try { meta = await this.fetchVideoMetadata(directId); } catch (_) {}
                     await this.startYouTubeSession(directId, { title: meta.title || '', artist: meta.artist || '', type: 'video', thumbnail: '' });
                 } finally {
-                    // Clear the results pane once the video session starts
-                    results.innerHTML = '';
+                    this.youtubeUI.showPlaceholder('<i class="fas fa-info-circle"></i> Enter a query to search YouTube.');
                 }
                 return;
             }
             // Otherwise perform a text search
-            placeholder.innerHTML = `<i class=\"fas fa-spinner fa-spin\"></i> Searching for \"${this.escapeHtml(query)}\"...`;
-            results.appendChild(placeholder);
-            this.fetchYouTubeResults(query, results);
+            this.youtubeUI.showPlaceholder('<i class="fas fa-spinner fa-spin"></i> Searching for "' + this.escapeHtml(query) + '"...');
+            this.fetchYouTubeResults(query);
         };
 
         searchBtn.addEventListener('click', (e) => {
@@ -1623,35 +1701,65 @@ class InstantKaraokeApp {
         });
     }
 
-    async fetchYouTubeResults(query, container) {
+    async fetchYouTubeResults(query) {
+        const ui = this.youtubeUI || {};
+        const { songsPanel, videosPanel, tabsContainer, placeholder, activateTab, tabMap } = ui;
         try {
             const res = await fetch(`/api/yt/search?q=${encodeURIComponent(query)}`);
             const data = await res.json();
             if (!res.ok) {
                 throw new Error(data.error || 'Search failed');
             }
-            this.renderYouTubeResults(data.results || [], container);
+            const songs = Array.isArray(data.songs) ? data.songs.slice(0, 10) : [];
+            const videos = Array.isArray(data.videos) ? data.videos.slice(0, 10) : [];
+            if (songsPanel) this.renderYouTubeResults(songs, songsPanel, '<i class="fas fa-circle-info"></i> No songs found.');
+            if (videosPanel) this.renderYouTubeResults(videos, videosPanel, '<i class="fas fa-circle-info"></i> No videos found.');
+
+            const hasSongs = songs.length > 0;
+            const hasVideos = videos.length > 0;
+
+            if (tabsContainer && placeholder) {
+                if (hasSongs || hasVideos) {
+                    if (ui.showTabs) ui.showTabs(); else {
+                        placeholder.style.display = 'none';
+                        tabsContainer.style.display = 'flex';
+                    }
+                    const songsTab = tabMap ? tabMap['youtubeSongsResults'] : null;
+                    const videosTab = tabMap ? tabMap['youtubeVideosResults'] : null;
+                    if (songsTab) songsTab.disabled = !hasSongs;
+                    if (videosTab) videosTab.disabled = !hasVideos;
+                    const preferredPanel = hasSongs ? 'youtubeSongsResults' : 'youtubeVideosResults';
+                    if (activateTab) activateTab(preferredPanel);
+                } else {
+                    tabsContainer.style.display = 'none';
+                    placeholder.innerHTML = '<i class="fas fa-circle-info"></i> No results found.';
+                    placeholder.style.display = 'block';
+                }
+            }
         } catch (err) {
-            container.innerHTML = '';
-            const error = document.createElement('div');
-            error.className = 'placeholder';
-            error.innerHTML = `<i class=\"fas fa-triangle-exclamation\"></i> ${this.escapeHtml(err.message)}`;
-            container.appendChild(error);
+            if (songsPanel) songsPanel.innerHTML = '';
+            if (videosPanel) videosPanel.innerHTML = '';
+            if (tabsContainer) tabsContainer.style.display = 'none';
+            if (placeholder) {
+                placeholder.innerHTML = `<i class="fas fa-triangle-exclamation"></i> ${this.escapeHtml(err.message)}`;
+                placeholder.style.display = 'block';
+            }
         }
     }
 
-    renderYouTubeResults(items, container) {
+    renderYouTubeResults(items, container, emptyMessage = '<i class="fas fa-circle-info"></i> No results found.') {
+        if (!container) return;
         container.innerHTML = '';
         if (!items.length) {
             const empty = document.createElement('div');
             empty.className = 'placeholder';
-            empty.innerHTML = '<i class="fas fa-circle-info"></i> No results found.';
+            empty.innerHTML = emptyMessage;
             container.appendChild(empty);
             return;
         }
         const grid = document.createElement('div');
         grid.className = 'yt-results-grid';
-        items.slice(0, 24).forEach((item) => {
+        items.slice(0, 10).forEach((item) => {
             const card = document.createElement('div');
             card.className = 'yt-card';
             const thumbUrl = item.thumbnails || '';
@@ -1855,12 +1963,105 @@ class InstantKaraokeApp {
         });
     }
 
+    updateKaraokeOverlaySizing(wrapperEl = null, metrics = null) {
+        try {
+            const wrapper = wrapperEl || document.getElementById('mediaWrapper');
+            if (!wrapper) return;
+            const overlay = wrapper.querySelector('.karaoke-overlay');
+            if (!overlay) return;
+
+            const width = overlay.clientWidth || wrapper.clientWidth || 0;
+            const height = overlay.clientHeight || wrapper.clientHeight || 0;
+            if (!width || !height) return;
+
+            const overlayId = overlay.dataset.overlayInstanceId || '';
+            const metricsObj = metrics && typeof metrics === 'object' ? metrics : {};
+            const providedLeftHeight = Number.isFinite(metricsObj.leftHeight)
+                ? Math.max(0, metricsObj.leftHeight)
+                : null;
+            const providedRightHeight = Number.isFinite(metricsObj.rightHeight)
+                ? Math.max(0, metricsObj.rightHeight)
+                : null;
+            if (providedLeftHeight !== null) {
+                overlay.dataset.lastLeftHeight = String(Math.round(providedLeftHeight));
+            }
+            if (providedRightHeight !== null) {
+                overlay.dataset.lastRightHeight = String(Math.round(providedRightHeight));
+            }
+            const storedLeftHeight = Number.parseFloat(overlay.dataset.lastLeftHeight || '0');
+            const storedRightHeight = Number.parseFloat(overlay.dataset.lastRightHeight || '0');
+            const leftHeight = Number.isFinite(storedLeftHeight) ? storedLeftHeight : 0;
+            const rightHeight = Number.isFinite(storedRightHeight) ? storedRightHeight : 0;
+
+            const roundedWidth = Math.round(width);
+            const roundedHeight = Math.round(height);
+            const roundedLeft = Math.round(leftHeight || 0);
+            const roundedRight = Math.round(rightHeight || 0);
+            const cached = this.overlaySizeCache.get(wrapper);
+            if (cached &&
+                cached.width === roundedWidth &&
+                cached.height === roundedHeight &&
+                cached.overlayId === overlayId &&
+                cached.left === roundedLeft &&
+                cached.right === roundedRight) {
+                return;
+            }
+            this.overlaySizeCache.set(wrapper, {
+                width: roundedWidth,
+                height: roundedHeight,
+                overlayId,
+                left: roundedLeft,
+                right: roundedRight,
+            });
+
+            const minFont = 13;
+            const maxFont = 48;
+            const widthBased = width * 0.045;
+            const heightBased = height * 0.11;
+            const fontSize = Math.max(minFont, Math.min(maxFont, Math.min(widthBased, heightBased)));
+
+            const lineHeight = fontSize * 1.18;
+            const fallbackLeftHeight = lineHeight * 3.6;
+            const fallbackRightHeight = lineHeight * 2.1;
+            const effectiveLeftHeight = leftHeight > 0
+                ? Math.max(leftHeight, lineHeight * 2.4)
+                : fallbackLeftHeight;
+            const effectiveRightHeight = rightHeight > 0
+                ? Math.max(rightHeight, lineHeight * 1.6)
+                : fallbackRightHeight;
+
+            const timerFontSize = Math.max(11, Math.min(fontSize * 0.63, 24));
+
+            const baseOffsetRaw = Math.max(fontSize * 0.4, height * 0.028);
+            const clampedOffset = Math.min(baseOffsetRaw, height * 0.15);
+
+            const leftOffset = Math.min(height * 0.24, clampedOffset + fontSize * 0.36);
+
+            const gapReserve = Math.max(lineHeight * 0.4, fontSize * 0.45, 20);
+            const requiredBandPx = effectiveLeftHeight + effectiveRightHeight + (clampedOffset * 2) + gapReserve;
+            let bandFraction = requiredBandPx / height;
+            bandFraction = Math.max(0.36, Math.min(bandFraction, 0.75));
+
+            const gradientFraction = Math.min(0.92, Math.max(bandFraction + 0.1, 0.54));
+
+            overlay.style.setProperty('--karaoke-line-font-size', `${fontSize.toFixed(2)}px`);
+            overlay.style.setProperty('--karaoke-timer-font-size', `${timerFontSize.toFixed(2)}px`);
+            overlay.style.setProperty('--karaoke-base-offset', `${clampedOffset.toFixed(2)}px`);
+            overlay.style.setProperty('--karaoke-left-offset', `${leftOffset.toFixed(2)}px`);
+            overlay.style.setProperty('--karaoke-lyrics-band-height', `${(bandFraction * 100).toFixed(2)}%`);
+            overlay.style.setProperty('--karaoke-gradient-height', `${(gradientFraction * 100).toFixed(2)}%`);
+        } catch (_) {
+            /* sizing errors are non-fatal */
+        }
+    }
+
     updatePlayerWidthToMedia() {
         const section = document.getElementById('playerSection');
         const wrapper = document.getElementById('mediaWrapper');
         if (!section || !wrapper) return;
         section.style.width = '';
         section.style.width = '';
+        this.updateKaraokeOverlaySizing(wrapper);
     }
 
     syncMediaStart(startAtAudioCtx, offsetSeconds) {
@@ -2158,24 +2359,34 @@ class InstantKaraokeApp {
     }
 
     ensureKaraokeOverlay(wrapperEl) {
-        if (!wrapperEl.querySelector('.karaoke-overlay')) {
-            const overlay = document.createElement('div');
+        if (!wrapperEl) return;
+        let overlay = wrapperEl.querySelector('.karaoke-overlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
             overlay.className = 'karaoke-overlay';
-            
+
             const timer = document.createElement('div');
             timer.className = 'karaoke-timer';
             timer.style.display = 'none';
-            
+
             const left = document.createElement('div');
             left.className = 'karaoke-line karaoke-line-left';
             const right = document.createElement('div');
             right.className = 'karaoke-line karaoke-line-right';
-            
+
             overlay.appendChild(timer);
             overlay.appendChild(left);
             overlay.appendChild(right);
             wrapperEl.appendChild(overlay);
         }
+        if (!overlay.dataset.overlayInstanceId) {
+            this.overlayInstanceCounter += 1;
+            overlay.dataset.overlayInstanceId = `ov-${this.overlayInstanceCounter}`;
+        }
+        if (this.overlayResizeObserver) {
+            try { this.overlayResizeObserver.observe(wrapperEl); } catch (_) {}
+        }
+        this.updateKaraokeOverlaySizing(wrapperEl);
     }
 
     updateKaraokeOverlay(activeIndex) {
@@ -2302,7 +2513,13 @@ class InstantKaraokeApp {
             
             // Update smooth word highlighting for karaoke overlay
             this.updateKaraokeWordHighlighting(adjustedTime);
-            
+
+            const leftHeight = left.offsetHeight || 0;
+            const rightHeight = right.offsetHeight || 0;
+            overlay.dataset.lastLeftHeight = String(Math.round(leftHeight));
+            overlay.dataset.lastRightHeight = String(Math.round(rightHeight));
+            this.updateKaraokeOverlaySizing(wrapper, { leftHeight, rightHeight });
+
             // Position countdown timer after lyrics are rendered
             if (this.lyrics._countdown.active && timer.style.display === 'block') {
                 // Use a timeout to ensure DOM is updated

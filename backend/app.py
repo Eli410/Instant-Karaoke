@@ -341,20 +341,6 @@ def yt_search_endpoint():
                     deduped.append(r)
             return deduped
 
-        videos = yt_search(query, 'videos') or []
-        for r in videos:
-            try:
-                r['type'] = 'video'
-            except Exception:
-                pass
-        songs = yt_search(query, 'songs') or []
-        for r in songs:
-            try:
-                r['type'] = 'song'
-            except Exception:
-                pass
-        songs = _dedupe(songs)[:7] 
-        videos = _dedupe(videos)[:3]
         def _views_to_int(v):
             try:
                 if v is None:
@@ -377,9 +363,23 @@ def yt_search_endpoint():
                 return int(num * mult)
             except Exception:
                 return 0
+
+        def _normalize(items, type_name):
+            prepared = []
+            for r in items or []:
+                try:
+                    r['type'] = type_name
+                except Exception:
+                    pass
+                prepared.append(r)
+            deduped = _dedupe(prepared)
+            return deduped[:10]
+
+        songs = _normalize(yt_search(query, 'songs'), 'song')
+        videos = _normalize(yt_search(query, 'videos'), 'video')
         combined = songs + videos
         combined.sort(key=lambda x: _views_to_int(x.get('views')), reverse=True)
-        return jsonify({'results': combined})
+        return jsonify({'results': combined, 'songs': songs, 'videos': videos})
     except Exception as e:
         return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
@@ -586,5 +586,3 @@ if __name__ == '__main__':
     cleanup_thread.start()
     logging.info('Started background cleanup task')
     app.run(debug=True, host='0.0.0.0', port=5000)
-
-

@@ -36,5 +36,5 @@ def search(query, type):
 
 
 if __name__ == "__main__":
-    print(search("Oasis Wonderwall"))
+    print(search("Imagine Dragons", "songs"))
 

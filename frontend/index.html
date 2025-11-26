@@ -34,7 +34,15 @@
                                 </button>
                             </div>
                             <div class="youtube-results" id="youtubeResults">
-                                <div class="placeholder"><i class="fas fa-info-circle"></i> Enter a query to search YouTube.</div>
+                                <div class="youtube-results-tabs" id="youtubeResultsTabs" style="display: none;">
+                                    <button class="yt-results-tab active" type="button" data-target="youtubeSongsResults">Songs</button>
+                                    <button class="yt-results-tab" type="button" data-target="youtubeVideosResults">Videos</button>
+                                </div>
+                                <div class="youtube-results-content" id="youtubeResultsContent">
+                                    <div class="placeholder" id="youtubeResultsPlaceholder"><i class="fas fa-info-circle"></i> Enter a query to search YouTube.</div>
+                                    <div class="yt-results-panel active" id="youtubeSongsResults" hidden></div>
+                                    <div class="yt-results-panel" id="youtubeVideosResults" hidden></div>
+                                </div>
                             </div>
                         </section>
 
